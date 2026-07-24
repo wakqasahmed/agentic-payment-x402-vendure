@@ -1,0 +1,163 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ConfigArg } from '@vendure/common/lib/generated-types';
+import type { Order, Payment, PaymentMethod, RequestContext } from '@vendure/core';
+
+import { x402PaymentMethodHandler } from '../src/handler.js';
+
+const FACILITATOR_URL = 'https://facilitator.test';
+
+function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
+  const defaults: Record<string, string> = {
+    facilitatorUrl: FACILITATOR_URL,
+    payToAddress: '0xMerchant',
+    network: 'eip155:8453',
+    asset: '0xUSDC',
+    assetDecimals: '6',
+    pegCurrencyCode: 'USD',
+    pegCurrencyDecimals: '2',
+    scheme: 'exact',
+    maxTimeoutSeconds: '300',
+    ...overrides,
+  };
+  return Object.entries(defaults).map(([name, value]) => ({ name, value }));
+}
+
+const ctx = undefined as unknown as RequestContext;
+const method = undefined as unknown as PaymentMethod;
+const order = { currencyCode: 'USD' } as Order;
+
+const paymentPayload = {
+  x402Version: 1,
+  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '1000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+  payload: { signature: 'fake' },
+} as unknown as Record<string, unknown>;
+
+describe('x402PaymentMethodHandler.createPayment', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('declines when the order currency does not match the configured peg currency', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      { currencyCode: 'EUR' } as Order,
+      1000,
+      configArgs(),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines when no payment payload was submitted', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 1000, configArgs(), {}, method);
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('verifies the payment and converts the amount to atomic units', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ isValid: true, payer: '0xBuyer' }), { status: 200 }),
+    );
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000, // $10.00 in cents
+      configArgs(),
+      { paymentPayload },
+      method,
+    );
+
+    expect(result.state).toBe('Authorized');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${FACILITATOR_URL}/verify`);
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.paymentRequirements.amount).toBe('10000000'); // 6-decimal USDC
+  });
+
+  it('declines when the facilitator reports the payment as invalid', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ isValid: false, invalidReason: 'insufficient_funds' }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('insufficient_funds');
+  });
+});
+
+describe('x402PaymentMethodHandler.settlePayment', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('settles using the payload/requirements stored from createPayment', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      metadata: {
+        paymentPayload,
+        requirements: {
+          scheme: 'exact',
+          network: 'eip155:8453',
+          asset: '0xUSDC',
+          amount: '10000000',
+          payTo: '0xMerchant',
+          maxTimeoutSeconds: 300,
+          extra: {},
+        },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(true);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${FACILITATOR_URL}/settle`);
+  });
+
+  it('fails when createPayment metadata is missing', async () => {
+    const payment = { metadata: {} } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('x402PaymentMethodHandler.cancelPayment', () => {
+  it('is a no-op success (no funds moved before settlement)', async () => {
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, {} as Payment, configArgs(), method);
+    expect(result?.success).toBe(true);
+  });
+});
