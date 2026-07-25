@@ -46,6 +46,8 @@ import { X402Resolver } from './resolver.js';
         scheme: String!
         network: String!
         asset: String!
+        assetName: String!
+        assetVersion: String!
         amount: String!
         payTo: String!
         maxTimeoutSeconds: Int!

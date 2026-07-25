@@ -13,6 +13,8 @@ function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
     network: 'eip155:8453',
     asset: '0xUSDC',
     assetDecimals: '6',
+    assetName: 'USDC',
+    assetVersion: '2',
     pegCurrencyCode: 'USD',
     pegCurrencyDecimals: '2',
     scheme: 'exact',
@@ -83,6 +85,9 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     expect(url).toBe(`${FACILITATOR_URL}/verify`);
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.paymentRequirements.amount).toBe('10000000'); // 6-decimal USDC
+    // EIP-3009 signing/verification needs the asset's own EIP-712 domain --
+    // without it the facilitator can't reconstruct the signed typed-data hash.
+    expect(body.paymentRequirements.extra).toEqual({ name: 'USDC', version: '2' });
   });
 
   it('declines when the facilitator reports the payment as invalid', async () => {

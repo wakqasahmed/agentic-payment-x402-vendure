@@ -61,10 +61,15 @@ export class X402Resolver {
     );
 
     return {
-      x402Version: 1,
+      // CAIP-2 network identifiers (e.g. "eip155:84532") are a v2 x402 concept --
+      // an x402Version of 1 alongside a CAIP-2 network fails scheme/network
+      // matching in current client SDKs (confirmed against @x402/core@2.19.0).
+      x402Version: 2,
       scheme: args.scheme || 'exact',
       network: args.network,
       asset: args.asset,
+      assetName: args.assetName,
+      assetVersion: args.assetVersion,
       amount,
       payTo: args.payToAddress,
       maxTimeoutSeconds: getInt('maxTimeoutSeconds'),

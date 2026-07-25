@@ -4,6 +4,8 @@ export interface X402PaymentRequirementsResult {
   scheme: string;
   network: string;
   asset: string;
+  assetName: string;
+  assetVersion: string;
   amount: string;
   payTo: string;
   maxTimeoutSeconds: number;
