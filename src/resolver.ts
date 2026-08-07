@@ -34,10 +34,24 @@ export class X402Resolver {
       throw new UserInputError('No active order found for session');
     }
 
-    const { paymentMethod } = await this.paymentMethodService.getMethodAndOperations(
-      ctx,
-      X402_PAYMENT_METHOD_CODE,
+    // The PaymentMethod entity's own `code` is merchant-configurable and
+    // independent of the handler code (a store can name it anything), so we
+    // find the enabled method actually backed by the x402 handler rather
+    // than assuming a PaymentMethod named "x402" exists.
+    const activePaymentMethods = await this.paymentMethodService.getActivePaymentMethods(ctx);
+    const x402PaymentMethods = activePaymentMethods.filter(
+      method => method.handler.code === X402_PAYMENT_METHOD_CODE,
     );
+    if (x402PaymentMethods.length === 0) {
+      throw new UserInputError('No enabled x402 payment method is configured for this channel');
+    }
+    if (x402PaymentMethods.length > 1) {
+      throw new UserInputError(
+        'Multiple enabled x402 payment methods are configured for this channel; ' +
+          'this query does not yet support selecting between them',
+      );
+    }
+    const paymentMethod = x402PaymentMethods[0];
     const args = argsToRecord(paymentMethod.handler.args);
     const getInt = (name: string): number => {
       const raw = args[name];

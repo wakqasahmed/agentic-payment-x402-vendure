@@ -5,13 +5,15 @@ import {
   Logger,
   OrderService,
   Payment,
+  PaymentMethodService,
   PaymentStateTransitionEvent,
   PluginCommonModule,
   TransactionalConnection,
   VendurePlugin,
+  isGraphQlErrorResult,
 } from '@vendure/core';
 import type { ID } from '@vendure/core';
-import { filter } from 'rxjs/operators';
+import { filter } from 'rxjs';
 
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
 import { x402PaymentMethodHandler } from './handler.js';
@@ -85,6 +87,7 @@ export class X402Plugin implements OnApplicationBootstrap {
     private eventBus: EventBus,
     private orderService: OrderService,
     private connection: TransactionalConnection,
+    private paymentMethodService: PaymentMethodService,
   ) {}
 
   static init(): typeof X402Plugin {
@@ -94,11 +97,7 @@ export class X402Plugin implements OnApplicationBootstrap {
   onApplicationBootstrap(): void {
     this.eventBus
       .ofType(PaymentStateTransitionEvent)
-      .pipe(
-        filter(
-          event => event.payment.method === X402_PAYMENT_METHOD_CODE && event.toState === 'Authorized',
-        ),
-      )
+      .pipe(filter(event => event.toState === 'Authorized'))
       .subscribe(event => {
         void this.autoSettle(event);
       });
@@ -106,6 +105,26 @@ export class X402Plugin implements OnApplicationBootstrap {
 
   private async autoSettle(event: PaymentStateTransitionEvent): Promise<void> {
     const paymentId = event.payment.id;
+    // `event.payment.method` is the merchant-configured PaymentMethod's own
+    // `code` (e.g. "crypto-payments"), not the handler code -- a store can
+    // name it anything, and multiple PaymentMethods can share this handler.
+    // Resolve the PaymentMethod entity and compare its *handler* code so
+    // auto-settle only fires for payments actually backed by this handler.
+    let ownerHandlerCode: string;
+    try {
+      const { paymentMethod } = await this.paymentMethodService.getMethodAndOperations(
+        event.ctx,
+        event.payment.method,
+      );
+      ownerHandlerCode = paymentMethod.handler.code;
+    } catch {
+      // PaymentMethod not found/enabled for this channel -- can't determine
+      // ownership, so there's nothing this plugin can safely act on.
+      return;
+    }
+    if (ownerHandlerCode !== X402_PAYMENT_METHOD_CODE) {
+      return;
+    }
     if (this.settlingPaymentIds.has(paymentId)) {
       return;
     }
@@ -115,13 +134,20 @@ export class X402Plugin implements OnApplicationBootstrap {
       if (current.state !== 'Authorized') {
         return;
       }
-      // handler.settlePayment reports facilitator failures via
-      // SettlePaymentErrorResult, which PaymentService turns into a Payment
-      // transition to Error (with errorMessage set) rather than a thrown
-      // error, so an admin sees the failure instead of a stranded Authorized
-      // payment. This catch only guards against unexpected errors outside
-      // that path (e.g. a DB error) so they can't crash the event subscriber.
-      await this.orderService.settlePayment(event.ctx, paymentId);
+      const result = await this.orderService.settlePayment(event.ctx, paymentId);
+      if (isGraphQlErrorResult(result)) {
+        const detail = 'paymentErrorMessage' in result ? result.paymentErrorMessage : result.transitionError;
+        Logger.error(
+          `Auto-settle for x402 payment ${String(paymentId)} did not succeed: ${result.message}` +
+            (detail ? ` (${detail})` : ''),
+          X402_PAYMENT_METHOD_CODE,
+        );
+      } else if (result.state !== 'Settled') {
+        Logger.error(
+          `Auto-settle for x402 payment ${String(paymentId)} left it in state "${result.state}" instead of Settled`,
+          X402_PAYMENT_METHOD_CODE,
+        );
+      }
     } catch (err) {
       Logger.error(
         `Auto-settle failed for x402 payment ${String(paymentId)}: ${(err as Error).message}`,
