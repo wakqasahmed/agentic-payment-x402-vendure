@@ -15,6 +15,8 @@ x402's protocol has a natural two-step shape — `verify` (check a signed paymen
 | `cancelPayment` | no-op (nothing settled yet, so nothing to undo) |
 | `createRefund` | *omitted* — see [Known limitations](#known-limitations) |
 
+`createPayment` only verifies (no funds move) because the x402 authorization the buyer signed carries a short validity window (`maxTimeoutSeconds`, default 300s — for the `exact` EVM scheme this is the EIP-3009 `validBefore` baked into the signature itself). Rather than requiring an admin to click "Settle" within that window, this plugin auto-settles: see [Auto-settle](#auto-settle-authorized--settled).
+
 ## Setup
 
 ```sh
@@ -72,7 +74,17 @@ There's no server-issued "client secret" the way Stripe works. Instead:
      }) { ... }
    }
    ```
-4. Vendure calls `createPayment` (verifies, → `Authorized`), then `settlePayment` (settles on-chain, → `Settled`) as part of its normal payment flow.
+4. Vendure calls `createPayment`, which verifies the payload with the facilitator and transitions the Payment to `Authorized`. No funds have moved yet.
+
+## Auto-settle (`Authorized` → `Settled`)
+
+Vendure itself has no built-in path from `Authorized` to `Settled` — `settlePayment` is normally only invoked by an admin via the Admin API. Left alone, that's a problem for x402: the authorization's validity window (`maxTimeoutSeconds`) can lapse before a human gets to it, and the facilitator will then reject the settlement as expired even though the buyer's agent already believes it paid.
+
+To close that gap, this plugin subscribes to Vendure's `PaymentStateTransitionEvent` and, the moment a Payment created by the **x402** handler reaches `Authorized`, calls `settlePayment` itself — well inside `maxTimeoutSeconds`, with no admin action required. This keeps the two-step verify/settle model (an admin can still manually settle or retry through the Admin API if needed) while making the common case fully automatic.
+
+**If the auto-settle attempt itself fails** (facilitator down, authorization expired before the auto-settle call reached it, network error, etc.), the Payment does *not* stay silently stuck at `Authorized`. Vendure's own `PaymentService.settlePayment` transitions it to `Error` and records the facilitator's failure reason as `payment.errorMessage`, which is visible on the order in the Admin UI — a stranded settlement is surfaced as a clearly failed payment, not a payment that looks fine but never finished. An admin can then retry settlement manually or resolve the order as needed.
+
+The plugin also guards against the state-transition event firing more than once for the same Payment (the event bus can in principle redeliver): it tracks in-flight settlement attempts per Payment ID and re-checks the Payment's current state immediately before calling `settlePayment`, so a duplicate event can't trigger a second settlement attempt once the first has started or finished.
 
 ## Known limitations
 

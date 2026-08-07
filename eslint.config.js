@@ -19,7 +19,7 @@ export default tseslint.config(
     // parameter types at runtime for dependency injection, which requires
     // real (not type-only) imports even though they're only referenced as
     // types in the source.
-    files: ['src/resolver.ts'],
+    files: ['src/resolver.ts', 'src/plugin.ts'],
     rules: {
       '@typescript-eslint/consistent-type-imports': 'off',
     },
