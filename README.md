@@ -2,7 +2,11 @@
 
 An [x402](https://x402.org) stablecoin payment method for [Vendure](https://vendure.io) — lets AI shopping agents (and any x402-aware client) pay for Vendure orders directly, without a card or a traditional checkout UI.
 
-As of publishing, no x402 payment integration exists for Vendure, Saleor, WooCommerce, or Shopify. Medusa is the one commerce platform that already has one ([`@financedistrict/medusa-plugin-prism-payment`](https://www.npmjs.com/package/@financedistrict/medusa-plugin-prism-payment)) — this package fills the same gap for Vendure.
+No x402 payment integration exists for Vendure or Saleor — this package fills that gap for Vendure. Medusa has had one for longer ([`@financedistrict/medusa-plugin-prism-payment`](https://www.npmjs.com/package/@financedistrict/medusa-plugin-prism-payment)).
+
+> **Corrected 25 July 2026.** An earlier version of this note also claimed no x402 integration existed for WooCommerce or Shopify. That is no longer accurate for WooCommerce. Several x402-capable plugins are now listed on WordPress.org — including [`claw-pay-gateway`](https://wordpress.org/plugins/claw-pay-gateway/) and [`instant-crypto-payments-for-woocommerce`](https://wordpress.org/plugins/instant-crypto-payments-for-woocommerce/) — all recent, and all with active-install counts still below the threshold WordPress.org publishes.
+>
+> WooCommerce core also ships its own ACP-shaped Agentic Checkout API now (verified against 10.9.4 and `trunk` on 25 July 2026). It is not open to third-party settlement rails: every agentic route requires Jetpack blog token authentication, and `CheckoutSessionsComplete` constrains the payment `provider` field to `'enum' => [ 'stripe' ]`. So a non-Stripe provider cannot currently complete a core agentic checkout session, even though the underlying `PaymentGatewayFeature::AGENTIC_COMMERCE` gateway-selection loop is itself provider-agnostic.
 
 ## How it maps onto Vendure
 

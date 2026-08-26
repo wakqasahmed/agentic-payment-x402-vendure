@@ -30,7 +30,8 @@
     "build": "rimraf dist && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "release": "changeset publish"
   },
   "peerDependencies": {
     "@nestjs/graphql": "^13.0.0",
@@ -42,6 +43,7 @@
     "graphql-tag": "^2.12.6"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.1",
     "@eslint/js": "^9.39.5",
     "@nestjs/graphql": "~13.1.0",
     "@types/node": "^26.1.1",
