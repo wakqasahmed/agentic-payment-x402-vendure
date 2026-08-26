@@ -1,0 +1,5 @@
+---
+"agentic-payment-x402-vendure": patch
+---
+
+Fix `settlePayment`'s order-total drift check (#39) to fail closed instead of silently skipping. Previously `if (freshOrder)` meant that any case where `orderService.findOne` returned `undefined` -- not just an unset `orderService`, but also a real production case where the `RequestContext`'s channel doesn't match the order's (a worker/job context, or a multi-vendor `OrderSellerStrategy` setup) -- skipped the drift check entirely, with no log line, and settled anyway. The check is now inverted: any inability to re-fetch a fresh order fails closed with a logged error, the same as a detected drift. Also switch the sibling-payment exclusion filter from a raw `p.id !== payment.id` to core's `idsAreEqual`, since Vendure's `ID` type is `string | number` and a strict comparison could false-positive-mismatch two representations of the same id, and move the stored `requirements.amount` `BigInt` parse inside the existing `try` block so a malformed stored value fails cleanly instead of throwing.

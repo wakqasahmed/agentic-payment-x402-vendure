@@ -288,14 +288,32 @@ describe('x402PaymentMethodHandler.createPayment', () => {
 
 describe('x402PaymentMethodHandler.settlePayment', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
+  let findOneMock: ReturnType<typeof vi.fn>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+    // The drift check (#39) now fails closed when orderService.findOne can't
+    // return a fresh order, so every test in this describe block needs a
+    // non-drifting mock order to genuinely exercise settlePayment's happy
+    // path through the new guard, not just skip past it.
+    findOneMock = vi.fn().mockResolvedValue({
+      totalWithTax: 1000, // $10.00, matching every stored requirements.amount ('10000000') in this describe block
+      payments: [],
+    });
+    const mockOrderService = { findOne: findOneMock };
+    await x402PaymentMethodHandler.init({ get: () => mockOrderService } as unknown as Parameters<
+      typeof x402PaymentMethodHandler.init
+    >[0]);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
+    // Reset the module-level orderService singleton so it can't leak into
+    // later describe blocks that assume it's unset.
+    await x402PaymentMethodHandler.init({ get: () => undefined } as unknown as Parameters<
+      typeof x402PaymentMethodHandler.init
+    >[0]);
   });
 
   it('settles using the payload/requirements stored from createPayment', async () => {
@@ -583,8 +601,11 @@ describe('x402PaymentMethodHandler.settlePayment order total drift check (#39)',
     >[0]);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
+    await x402PaymentMethodHandler.init({ get: () => undefined } as unknown as Parameters<
+      typeof x402PaymentMethodHandler.init
+    >[0]);
   });
 
   function makePayment(id: string) {
@@ -657,6 +678,100 @@ describe('x402PaymentMethodHandler.settlePayment order total drift check (#39)',
     const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
 
     expect(result.success).toBe(true);
+  });
+
+  it('excludes only the settling payment when a distinct sibling payment also covers part of the order', async () => {
+    // Two Authorized payments on the order: the one being settled ($10, id
+    // 'payment-self') and a different, unrelated payment ($10, id
+    // 'payment-sibling'). The sibling must stay in the outstanding-balance
+    // computation (proving the id filter excludes only the settling payment,
+    // not every payment) while payment-self must be excluded (proving it
+    // isn't double-counted against its own requirement).
+    findOneMock.mockResolvedValueOnce({
+      totalWithTax: 2000, // $20.00 order covered by both payments together
+      payments: [
+        { id: 'payment-self', state: 'Authorized', amount: 1000, refunds: [] },
+        { id: 'payment-sibling', state: 'Authorized', amount: 1000, refunds: [] },
+      ],
+    });
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453' }), { status: 200 }),
+    );
+
+    // outstanding = 2000 (totalWithTax) - 1000 (sibling, correctly not excluded) = 1000
+    // -> converts to the frozen 10000000 -> settles.
+    const payment = makePayment('payment-self');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('detects drift caused by a sibling payment changing the order-total coverage, not just totalWithTax', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    findOneMock.mockResolvedValueOnce({
+      totalWithTax: 2000,
+      payments: [
+        { id: 'payment-self', state: 'Authorized', amount: 1000, refunds: [] },
+        // Sibling now covers more than it did at authorize time (e.g. an
+        // admin bumped it), shrinking payment-self's true outstanding share.
+        { id: 'payment-sibling', state: 'Authorized', amount: 1500, refunds: [] },
+      ],
+    });
+
+    // outstanding = 2000 - 1500 = 500 -> converts to 5000000, which no longer
+    // matches the frozen 10000000 -> fails closed, facilitator never called.
+    const payment = makePayment('payment-self');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('Order total changed');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('fails closed without settling when the order cannot be re-fetched at all', async () => {
+    // orderService.findOne returning undefined is reachable in production
+    // (e.g. a RequestContext on a different channel than the order's), not
+    // just "orderService is unset" -- not being able to verify the order
+    // total must fail closed the same way a detected drift does.
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+    findOneMock.mockResolvedValueOnce(undefined);
+
+    const payment = makePayment('payment-unreachable');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('re-validate');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  it('fails closed without settling when orderService was never injected (init() not run)', async () => {
+    // Same fail-closed path as findOne returning undefined -- "can't verify"
+    // covers DI-not-ready and channel-mismatch/order-not-found with one code
+    // path, so this must behave identically without a dedicated branch.
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+    await x402PaymentMethodHandler.init({ get: () => undefined } as unknown as Parameters<
+      typeof x402PaymentMethodHandler.init
+    >[0]);
+
+    const payment = makePayment('payment-no-di');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('re-validate');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
   });
 });
 

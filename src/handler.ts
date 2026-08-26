@@ -1,4 +1,4 @@
-import { LanguageCode, Logger, OrderService, PaymentMethodHandler } from '@vendure/core';
+import { LanguageCode, Logger, OrderService, PaymentMethodHandler, idsAreEqual } from '@vendure/core';
 import type {
   CancelPaymentErrorResult,
   CancelPaymentResult,
@@ -352,32 +352,50 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     // already Authorized and would otherwise double-count against its own
     // requirement) and fail closed -- without ever calling the facilitator --
     // if it no longer matches what was authorized.
+    //
+    // `orderService?.findOne` can come back `undefined` for reasons besides
+    // "the order doesn't exist": `init()` not having run yet, or (in
+    // production) `OrderService.findOne` being channel-scoped -- a settle
+    // driven from a `RequestContext` on a different channel than the order's
+    // (a worker/job context, or a multi-vendor `OrderSellerStrategy` setup)
+    // returns `undefined` there too. Not being able to verify the order total
+    // is not the same as having verified it, so this fails closed rather than
+    // silently skipping the check and settling anyway.
     const freshOrder = await orderService?.findOne(ctx, order.id, ['payments', 'payments.refunds']);
-    if (freshOrder) {
-      const otherPayments = (freshOrder.payments ?? []).filter(p => p.id !== payment.id);
-      const currentOutstandingBalance = Math.max(freshOrder.totalWithTax - totalCoveredByPayments(otherPayments), 0);
-      const pegCurrencyDecimals = (args.pegCurrencyDecimals as number | undefined) ?? 2;
+    if (!freshOrder) {
+      Logger.error(
+        `x402 could not re-fetch order ${order.code} to re-validate the authorized amount for payment ` +
+          `${payment.id}. Refusing to settle rather than settling an unverified amount.`,
+        LOGGER_CTX,
+      );
+      return { success: false, errorMessage: 'Could not re-validate the order total before settling.' };
+    }
 
-      let currentAtomicAmount: string;
-      try {
-        currentAtomicAmount = toAtomicUnits(currentOutstandingBalance, pegCurrencyDecimals, args.assetDecimals);
-      } catch (err) {
-        return { success: false, errorMessage: (err as Error).message };
-      }
+    const otherPayments = (freshOrder.payments ?? []).filter(p => !idsAreEqual(p.id, payment.id));
+    const currentOutstandingBalance = Math.max(freshOrder.totalWithTax - totalCoveredByPayments(otherPayments), 0);
+    const pegCurrencyDecimals = (args.pegCurrencyDecimals as number | undefined) ?? 2;
 
-      if (BigInt(currentAtomicAmount) !== BigInt(stored.requirements.amount)) {
-        Logger.error(
-          `x402 order total drift for payment ${payment.id} (order ${order.code}): requirements.amount ` +
-            `${stored.requirements.amount} was frozen at authorize time, but the order's current outstanding ` +
-            `balance now converts to ${currentAtomicAmount}. Refusing to settle -- order total changed since ` +
-            'payment was authorized.',
-          LOGGER_CTX,
-        );
-        return {
-          success: false,
-          errorMessage: 'Order total changed since payment was authorized. Refusing to settle.',
-        };
-      }
+    let currentAtomicAmount: string;
+    let requestedAtomicAmount: bigint;
+    try {
+      currentAtomicAmount = toAtomicUnits(currentOutstandingBalance, pegCurrencyDecimals, args.assetDecimals);
+      requestedAtomicAmount = BigInt(stored.requirements.amount);
+    } catch (err) {
+      return { success: false, errorMessage: (err as Error).message };
+    }
+
+    if (BigInt(currentAtomicAmount) !== requestedAtomicAmount) {
+      Logger.error(
+        `x402 order total drift for payment ${payment.id} (order ${order.code}): requirements.amount ` +
+          `${stored.requirements.amount} was frozen at authorize time, but the order's current outstanding ` +
+          `balance now converts to ${currentAtomicAmount}. Refusing to settle -- order total changed since ` +
+          'payment was authorized.',
+        LOGGER_CTX,
+      );
+      return {
+        success: false,
+        errorMessage: 'Order total changed since payment was authorized. Refusing to settle.',
+      };
     }
 
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
