@@ -28,9 +28,11 @@ const ctx = undefined as unknown as RequestContext;
 const method = undefined as unknown as PaymentMethod;
 const order = { currencyCode: 'USD' } as Order;
 
+// Matches the requirements built for a $10.00 (1000 cents) order under the
+// default configArgs() above: toAtomicUnits(1000, 2, 6) -> "10000000".
 const paymentPayload = {
   x402Version: 2,
-  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '1000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
   payload: { signature: 'fake' },
 } as unknown as Record<string, unknown>;
 
@@ -123,6 +125,73 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     );
     expect(result.state).toBe('Declined');
     expect(result.errorMessage).toContain('insufficient_funds');
+  });
+
+  it('rejects a payload whose signed amount does not match the order total, without calling the facilitator', async () => {
+    // Signed for $1 (1000000 atomic units) against a $10.00 (1000-cent) order.
+    // Previously this reached the facilitator and was authorized purely on
+    // trust that the facilitator would catch the mismatch server-side.
+    const mismatchedPayload = {
+      ...paymentPayload,
+      accepted: { ...(paymentPayload as { accepted: Record<string, unknown> }).accepted, amount: '1000000' },
+    };
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: mismatchedPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('amount');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed payload (not an object) before calling the facilitator', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: 'not-an-object' },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload missing required fields before calling the facilitator', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: { x402Version: 2 } },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized payload before calling the facilitator', async () => {
+    const oversizedPayload = {
+      ...paymentPayload,
+      payload: { signature: 'x'.repeat(20 * 1024) },
+    };
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: oversizedPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('size');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
