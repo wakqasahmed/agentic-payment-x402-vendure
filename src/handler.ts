@@ -208,8 +208,23 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     // Deliberately not nested under metadata.public: the signed payment
     // payload shouldn't be exposed back to the Shop API.
     const stored = payment.metadata as
-      | { paymentPayload?: PaymentPayload; requirements?: PaymentRequirements }
+      | { paymentPayload?: PaymentPayload; requirements?: PaymentRequirements; transaction?: string }
       | undefined;
+
+    // Nothing upstream prevents settlePayment being invoked twice for the same
+    // payment (PaymentService calls the handler before validating the state
+    // transition). Re-calling the facilitator with an already-settled payload
+    // fails (nonce already used) and would turn a successful settlement into a
+    // spurious error on the second call -- short-circuit instead.
+    if (stored?.transaction) {
+      // args.network (this payment method's configured network) rather than
+      // reading it back off stored metadata -- the latter is only populated
+      // by a merge of this handler's own prior settlePayment return value,
+      // which is a fragile thing to depend on for a value that's already
+      // available directly from config.
+      return { success: true, metadata: { transaction: stored.transaction, network: args.network } };
+    }
+
     if (!stored?.paymentPayload || !stored.requirements) {
       return {
         success: false,
