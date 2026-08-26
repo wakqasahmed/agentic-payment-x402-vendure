@@ -1,6 +1,6 @@
 {
   "name": "vendure-payment-x402",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "x402 stablecoin payment method for Vendure — lets AI shopping agents (and any x402-aware client) pay for Vendure orders via the x402 payments protocol.",
   "type": "module",
   "license": "MIT",
