@@ -60,4 +60,19 @@ describe('validatePaymentPayload', () => {
     const oversized = { ...validPayload, payload: { signature: 'x'.repeat(MAX_PAYMENT_PAYLOAD_BYTES) } };
     expect(validatePaymentPayload(oversized, requirements)).toMatch(/size/i);
   });
+
+  it('measures the size cap in UTF-8 bytes, not UTF-16 code units', () => {
+    // Each of these is 1 UTF-16 code unit but 3 UTF-8 bytes -- a payload just
+    // under the cap by .length could be nearly 3x over it in real bytes.
+    const multibyteChar = '\u{20AC}'; // €
+    const nearCapByCodeUnits = multibyteChar.repeat(MAX_PAYMENT_PAYLOAD_BYTES - 100);
+    const oversized = { ...validPayload, payload: { signature: nearCapByCodeUnits } };
+    expect(validatePaymentPayload(oversized, requirements)).toMatch(/size/i);
+  });
+
+  it('rejects a payload that is not JSON-serializable (e.g. a circular reference)', () => {
+    const circular: Record<string, unknown> = { ...validPayload };
+    circular.self = circular;
+    expect(validatePaymentPayload(circular, requirements)).toMatch(/serializable/i);
+  });
 });

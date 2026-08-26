@@ -23,7 +23,17 @@ export function validatePaymentPayload(
   raw: unknown,
   requirements: Pick<PaymentRequirements, 'scheme' | 'network' | 'asset' | 'amount' | 'payTo'>,
 ): string | null {
-  if (JSON.stringify(raw).length > MAX_PAYMENT_PAYLOAD_BYTES) {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(raw);
+  } catch {
+    // Circular references, BigInt, etc. -- not a valid payload shape either way.
+    return 'Payment payload is not JSON-serializable.';
+  }
+  // .length counts UTF-16 code units, not bytes -- undercounts anything with
+  // non-ASCII characters (multi-byte in UTF-8) and would let an oversized
+  // payload through the cap.
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_PAYMENT_PAYLOAD_BYTES) {
     return `Payment payload exceeds the maximum allowed size of ${MAX_PAYMENT_PAYLOAD_BYTES} bytes.`;
   }
 
