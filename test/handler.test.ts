@@ -19,6 +19,7 @@ function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
     pegCurrencyDecimals: '2',
     scheme: 'exact',
     maxTimeoutSeconds: '300',
+    facilitatorTimeoutSeconds: '30',
     ...overrides,
   };
   return Object.entries(defaults).map(([name, value]) => ({ name, value }));
@@ -125,6 +126,21 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     );
     expect(result.state).toBe('Declined');
     expect(result.errorMessage).toContain('insufficient_funds');
+  });
+
+  it('fails fast with a clear error when the facilitator hangs, instead of waiting forever', async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {})); // never resolves
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs({ facilitatorTimeoutSeconds: '0' }),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('timed out');
   });
 
   it('declines a zero-amount payment without calling the facilitator (fully-discounted order)', async () => {
@@ -257,6 +273,29 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
     const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
     expect(result.success).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fails fast with a clear error when the facilitator hangs on settle', async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {})); // never resolves
+
+    const payment = {
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(
+      ctx,
+      order,
+      payment,
+      configArgs({ facilitatorTimeoutSeconds: '0' }),
+      method,
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('timed out');
+    }
   });
 
   it('is idempotent: a payment already carrying a settlement transaction short-circuits without re-calling the facilitator', async () => {

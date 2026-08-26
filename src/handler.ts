@@ -29,6 +29,26 @@ import { validatePaymentPayload } from './payment-payload.js';
  * against the server-built requirements before it's ever forwarded anywhere.
  */
 
+class FacilitatorTimeoutError extends Error {}
+
+/**
+ * `HTTPFacilitatorClient.verify`/`settle` call `fetch` internally with no
+ * `AbortSignal`, and Node's `fetch` has no default timeout -- a black-holed
+ * or slow facilitator would otherwise hang `createPayment`/`settlePayment`
+ * indefinitely. This can't cancel the underlying request (no way to pass an
+ * AbortSignal through), but it does stop the handler from hanging so the
+ * caller gets a clear, fast failure instead of an indefinite wait.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutSeconds: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new FacilitatorTimeoutError(`Facilitator ${label} timed out after ${timeoutSeconds}s.`));
+    }, timeoutSeconds * 1000);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * The x402 payment method for Vendure. Maps x402's verify/settle split onto
  * Vendure's Authorized -> Settled two-step payment flow: `createPayment`
@@ -138,6 +158,18 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       defaultValue: 300,
       label: [{ languageCode: LanguageCode.en, value: 'Max timeout (seconds)' }],
     },
+    facilitatorTimeoutSeconds: {
+      type: 'int',
+      required: false,
+      defaultValue: 30,
+      label: [{ languageCode: LanguageCode.en, value: 'Facilitator HTTP timeout (seconds)' }],
+      description: [
+        {
+          languageCode: LanguageCode.en,
+          value: 'How long to wait for the facilitator to respond to verify/settle before failing fast.',
+        },
+      ],
+    },
   },
   createPayment: async (_ctx, order, amount, args, metadata): Promise<CreatePaymentResult | CreatePaymentErrorResult> => {
     if (order.currencyCode !== args.pegCurrencyCode) {
@@ -201,9 +233,10 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     const paymentPayload = rawPaymentPayload as PaymentPayload;
 
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
+    const facilitatorTimeoutSeconds = args.facilitatorTimeoutSeconds ?? 30;
 
     try {
-      const result = await facilitator.verify(paymentPayload, requirements);
+      const result = await withTimeout(facilitator.verify(paymentPayload, requirements), facilitatorTimeoutSeconds, 'verify');
       if (!result.isValid) {
         return {
           amount,
@@ -251,8 +284,9 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     }
 
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
+    const facilitatorTimeoutSeconds = args.facilitatorTimeoutSeconds ?? 30;
     try {
-      const result = await facilitator.settle(stored.paymentPayload, stored.requirements);
+      const result = await withTimeout(facilitator.settle(stored.paymentPayload, stored.requirements), facilitatorTimeoutSeconds, 'settle');
       if (!result.success) {
         return { success: false, errorMessage: result.errorMessage || result.errorReason || 'Settlement failed.' };
       }
