@@ -150,6 +150,14 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
+    if (amount <= 0) {
+      // Nothing to charge (fully-discounted order, or the remaining balance
+      // on a partially-paid order) -- a facilitator that only checks
+      // signedValue >= requiredAmount would treat almost any payload as
+      // satisfying a $0 requirement, so don't round-trip to it at all.
+      return { amount, state: 'Declined' as const, errorMessage: 'Nothing to charge for this order.' };
+    }
+
     const paymentPayload = (metadata as X402PaymentMetadata | undefined)?.paymentPayload;
     if (!paymentPayload) {
       return {

@@ -124,6 +124,22 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     expect(result.state).toBe('Declined');
     expect(result.errorMessage).toContain('insufficient_funds');
   });
+
+  it('declines a zero-amount payment without calling the facilitator (fully-discounted order)', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines a zero-amount payment for the ArrangingAdditionalPayment zero-remaining-balance case', async () => {
+    // Vendure computes `amount` as `amountToPay = totalWithTax - totalCoveredByPayments`
+    // before calling this handler, so a fully-covered order reaches createPayment with
+    // amount 0 exactly the same way a $0 order total would -- same guard, same test.
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('Nothing to charge');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('x402PaymentMethodHandler.settlePayment', () => {
