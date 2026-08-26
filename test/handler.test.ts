@@ -173,6 +173,21 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
     expect(result.success).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('is idempotent: a payment already carrying a settlement transaction short-circuits without re-calling the facilitator', async () => {
+    const payment = {
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+        transaction: '0xAlreadySettled',
+        network: 'eip155:8453',
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('x402PaymentMethodHandler.cancelPayment', () => {
