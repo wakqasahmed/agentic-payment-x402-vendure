@@ -206,9 +206,18 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
+    // Vendure's argsArrayToHash only copies args actually present in the
+    // stored config -- it never falls back to `defaultValue` for an optional
+    // arg an admin left unset. ConfigArgValues<T> also (mis)types these as
+    // plain `number`/`string` even though `required: false`, so nothing warns
+    // about this at compile time; the `as ... | undefined` casts below make
+    // the real runtime type explicit before applying the documented default
+    // ourselves.
+    const pegCurrencyDecimals = (args.pegCurrencyDecimals as number | undefined) ?? 2;
+
     let requiredAtomicAmount: string;
     try {
-      requiredAtomicAmount = toAtomicUnits(amount, args.pegCurrencyDecimals, args.assetDecimals);
+      requiredAtomicAmount = toAtomicUnits(amount, pegCurrencyDecimals, args.assetDecimals);
     } catch (err) {
       return { amount, state: 'Declined' as const, errorMessage: (err as Error).message };
     }
@@ -224,7 +233,14 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
-    const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
+    const requirements = buildPaymentRequirements(
+      {
+        ...args,
+        scheme: (args.scheme as string | undefined) ?? 'exact',
+        maxTimeoutSeconds: (args.maxTimeoutSeconds as number | undefined) ?? 300,
+      },
+      requiredAtomicAmount,
+    );
 
     const validationError = validatePaymentPayload(rawPaymentPayload, requirements);
     if (validationError) {

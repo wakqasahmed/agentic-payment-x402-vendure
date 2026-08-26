@@ -25,6 +25,13 @@ function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
   return Object.entries(defaults).map(([name, value]) => ({ name, value }));
 }
 
+/** Simulates an admin leaving an optional arg genuinely unset in the Admin UI
+ * (not just empty) -- the ConfigArg entry is entirely absent from the stored
+ * array, which is what `argsArrayToHash` actually receives. */
+function configArgsOmitting(names: string[]): ConfigArg[] {
+  return configArgs().filter(arg => !names.includes(arg.name));
+}
+
 const ctx = undefined as unknown as RequestContext;
 const method = undefined as unknown as PaymentMethod;
 const order = { currencyCode: 'USD' } as Order;
@@ -91,6 +98,30 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     // EIP-3009 signing/verification needs the asset's own EIP-712 domain --
     // without it the facilitator can't reconstruct the signed typed-data hash.
     expect(body.paymentRequirements.extra).toEqual({ name: 'USDC', version: '2' });
+  });
+
+  it('applies documented defaults for pegCurrencyDecimals/scheme/maxTimeoutSeconds when left unset', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ isValid: true, payer: '0xBuyer' }), { status: 200 }),
+    );
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000, // $10.00 in cents
+      configArgsOmitting(['pegCurrencyDecimals', 'scheme', 'maxTimeoutSeconds']),
+      { paymentPayload },
+      method,
+    );
+
+    // Before the fix this computed 6 - undefined = NaN, and the buyer saw
+    // "The number NaN cannot be converted to a BigInt because it is not an integer".
+    expect(result.state).toBe('Authorized');
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.paymentRequirements.amount).toBe('10000000'); // defaulted pegCurrencyDecimals: 2
+    expect(body.paymentRequirements.scheme).toBe('exact');
+    expect(body.paymentRequirements.maxTimeoutSeconds).toBe(300);
   });
 
   it('declines with an actionable error when assetName/assetVersion are not configured', async () => {
