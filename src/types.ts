@@ -4,6 +4,8 @@ export interface X402PaymentRequirementsResult {
   scheme: string;
   network: string;
   asset: string;
+  /** The asset contract's EIP-712 domain, mirroring the `extra` shape sent to the facilitator. */
+  extra: { name: string; version: string };
   amount: string;
   payTo: string;
   maxTimeoutSeconds: number;

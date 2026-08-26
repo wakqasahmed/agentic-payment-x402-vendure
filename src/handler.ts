@@ -83,6 +83,28 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       label: [{ languageCode: LanguageCode.en, value: 'Asset decimals' }],
       description: [{ languageCode: LanguageCode.en, value: 'Decimal places of the asset, e.g. 6 for USDC.' }],
     },
+    assetName: {
+      type: 'string',
+      label: [{ languageCode: LanguageCode.en, value: 'Asset EIP-712 name' }],
+      description: [
+        {
+          languageCode: LanguageCode.en,
+          value:
+            "The asset contract's EIP-712 domain `name` (e.g. \"USDC\"). Required for the exact-EVM " +
+            'scheme to sign and verify the EIP-3009 `transferWithAuthorization` typed data.',
+        },
+      ],
+    },
+    assetVersion: {
+      type: 'string',
+      label: [{ languageCode: LanguageCode.en, value: 'Asset EIP-712 version' }],
+      description: [
+        {
+          languageCode: LanguageCode.en,
+          value: "The asset contract's EIP-712 domain `version` (e.g. \"2\" for USDC).",
+        },
+      ],
+    },
     pegCurrencyCode: {
       type: 'string',
       label: [{ languageCode: LanguageCode.en, value: 'Peg currency code' }],
@@ -147,6 +169,17 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return { amount, state: 'Declined' as const, errorMessage: (err as Error).message };
     }
 
+    if (!args.assetName || !args.assetVersion) {
+      return {
+        amount,
+        state: 'Declined' as const,
+        errorMessage:
+          'x402 payment method is missing required "assetName"/"assetVersion" config. ' +
+          "Reconfigure this payment method in the Admin UI with the asset's EIP-712 domain " +
+          'name and version before accepting payments.',
+      };
+    }
+
     const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
 
@@ -207,6 +240,8 @@ function buildPaymentRequirements(
     payToAddress: string;
     network: string;
     asset: string;
+    assetName: string;
+    assetVersion: string;
     scheme: string;
     maxTimeoutSeconds: number;
   },
@@ -219,6 +254,11 @@ function buildPaymentRequirements(
     amount,
     payTo: args.payToAddress,
     maxTimeoutSeconds: args.maxTimeoutSeconds,
-    extra: {},
+    // EIP-3009 `transferWithAuthorization` signing/verification needs the asset
+    // contract's own EIP-712 domain to reconstruct the same typed-data hash the
+    // buyer signed -- without it the facilitator can't recover the signer and
+    // verification fails with invalid_exact_evm_missing_eip712_domain, even for
+    // a correctly-signed payment.
+    extra: { name: args.assetName, version: args.assetVersion },
   };
 }

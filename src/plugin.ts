@@ -56,11 +56,17 @@ import { X402Resolver } from './resolver.js';
   },
   shopApiExtensions: {
     schema: gql`
+      type X402Extra {
+        name: String!
+        version: String!
+      }
+
       type X402PaymentRequirements {
         x402Version: Int!
         scheme: String!
         network: String!
         asset: String!
+        extra: X402Extra!
         amount: String!
         payTo: String!
         maxTimeoutSeconds: Int!

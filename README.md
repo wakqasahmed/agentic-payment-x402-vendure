@@ -44,6 +44,8 @@ Then create a PaymentMethod in the Admin UI using the **x402** handler and confi
 | `network` | `eip155:8453` | CAIP-2 network id (e.g. Base) |
 | `asset` | `0x833589...2913` | Stablecoin contract/mint address |
 | `assetDecimals` | `6` | Decimals of that asset (6 for USDC) |
+| `assetName` | `USDC` | The asset contract's EIP-712 domain `name` — required to sign/verify the EIP-3009 `transferWithAuthorization` typed data |
+| `assetVersion` | `2` | The asset contract's EIP-712 domain `version` (`2` for USDC) |
 | `pegCurrencyCode` | `USD` | ISO 4217 currency the asset is assumed 1:1 pegged to |
 | `pegCurrencyDecimals` | `2` | Decimals Vendure stores that currency in |
 | `facilitatorUrl` | *(optional)* | Defaults to the public `x402.org` facilitator (testnet-only — use a production facilitator, or run your own, for mainnet) |
@@ -62,6 +64,7 @@ There's no server-issued "client secret" the way Stripe works. Instead:
        scheme
        network
        asset
+       extra { name version }
        amount
        payTo
        maxTimeoutSeconds
@@ -99,7 +102,9 @@ The plugin also guards against the state-transition event firing more than once 
 - **No automated refunds.** x402 `exact`-scheme settlements are on-chain token transfers; the protocol has no facilitator-side reversal endpoint, and this plugin never holds merchant private keys to construct one itself. `createRefund` is intentionally omitted — per Vendure's own `PaymentMethodHandler` docs, omitting it means refunds are settled manually by an administrator, which is correct here, not a missing feature.
 - **Single full-order payment only.** The requirements query quotes `order.totalWithTax`; split/partial payments across multiple methods aren't accounted for.
 - **1:1 peg assumption, no FX.** `pegCurrencyCode`/`pegCurrencyDecimals` are explicit configuration because Vendure doesn't expose a public per-currency decimals table to plugins — there's no automatic ISO 4217 lookup, and no price-oracle conversion for non-pegged assets.
-- **Not e2e-tested against a running Vendure instance.** The handler (`createPayment`/`settlePayment`/`cancelPayment`) is unit-tested directly against Vendure's public `PaymentMethodHandler` API with a mocked facilitator (see `test/`). The Shop API resolver (`activeOrderX402PaymentRequirements`) is built against Vendure's confirmed `ActiveOrderService`/`PaymentMethodService` APIs but hasn't been exercised against a live server/database — that requires a full Postgres + Vendure bootstrap this development environment doesn't have. Flagging this rather than claiming untested coverage.
+- **`assetName`/`assetVersion` are required, not optional.** EIP-3009 `transferWithAuthorization` signing/verification needs the asset contract's own EIP-712 domain to reconstruct the signed typed-data hash. Omitting these makes the facilitator reject every payment with `invalid_exact_evm_missing_eip712_domain`, even when the buyer signed correctly — this was caught by e2e testing against a live facilitator, not by the unit tests, since the mocked facilitator doesn't validate signatures.
+
+E2e-verified against a real Vendure server + Postgres + the public `x402.org` facilitator on Base Sepolia testnet: a signed EIP-3009 USDC payment cleared `verify` and `settle`, the Order reached `PaymentSettled`, and the transfer landed on-chain.
 
 ## Development
 
