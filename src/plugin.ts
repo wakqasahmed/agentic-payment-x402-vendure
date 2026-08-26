@@ -17,7 +17,20 @@ import { filter } from 'rxjs';
 
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
 import { x402PaymentMethodHandler } from './handler.js';
+import { configureX402RateLimit } from './rate-limit.js';
+import type { X402RateLimitOptions } from './rate-limit.js';
 import { X402Resolver } from './resolver.js';
+
+export interface X402PluginOptions {
+  /**
+   * Rate limits applied to the anonymous Shop API surface this plugin adds
+   * (`createPayment` via `addPaymentToOrder`, and
+   * `activeOrderX402PaymentRequirements`), keyed by session/IP. All fields
+   * are optional and fall back to sane built-in defaults -- see
+   * `DEFAULT_RATE_LIMIT` in `rate-limit.ts`.
+   */
+  rateLimit?: Partial<X402RateLimitOptions>;
+}
 
 /**
  * Adds the x402 stablecoin payment method to Vendure.
@@ -96,7 +109,8 @@ export class X402Plugin implements OnApplicationBootstrap {
     private paymentMethodService: PaymentMethodService,
   ) {}
 
-  static init(): typeof X402Plugin {
+  static init(options?: X402PluginOptions): typeof X402Plugin {
+    configureX402RateLimit(options?.rateLimit);
     return X402Plugin;
   }
 

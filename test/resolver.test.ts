@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigArg } from '@vendure/common/lib/generated-types';
 import type {
   ActiveOrderService,
@@ -10,9 +10,17 @@ import type {
 } from '@vendure/core';
 
 import { X402_PAYMENT_METHOD_CODE } from '../src/constants.js';
+import { resetX402RateLimiters } from '../src/rate-limit.js';
 import { X402Resolver } from '../src/resolver.js';
 
 const ctx = undefined as unknown as RequestContext;
+
+beforeEach(() => {
+  // ctx is undefined in these tests, so every call shares the 'unknown'
+  // rate-limit bucket -- reset between tests so unrelated tests don't
+  // starve each other's budget.
+  resetX402RateLimiters();
+});
 
 function configArgs(overrides: Record<string, string | undefined> = {}): ConfigArg[] {
   const defaults: Record<string, string | undefined> = {
