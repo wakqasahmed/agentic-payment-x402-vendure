@@ -1,5 +1,6 @@
 import { LanguageCode, PaymentMethodHandler } from '@vendure/core';
 import type {
+  CancelPaymentErrorResult,
   CancelPaymentResult,
   CreatePaymentErrorResult,
   CreatePaymentResult,
@@ -228,7 +229,19 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return { success: false, errorMessage: message };
     }
   },
-  cancelPayment: async (): Promise<CancelPaymentResult> => {
+  cancelPayment: async (_ctx, _order, payment): Promise<CancelPaymentResult | CancelPaymentErrorResult> => {
+    // x402 exact-scheme settlements are on-chain transfers and are irreversible
+    // -- once `settlePayment` has run there is no way to "cancel" the money back,
+    // so refuse rather than silently reporting success with no refund path.
+    const settled = payment.metadata as { transaction?: string } | undefined;
+    if (payment.state === 'Settled' || settled?.transaction) {
+      return {
+        success: false,
+        errorMessage:
+          'This payment has already been settled on-chain and cannot be cancelled. ' +
+          'x402 exact-scheme transfers are irreversible -- issue a manual refund to the buyer instead.',
+      };
+    }
     // No funds have moved by this point (only `verify`, not `settle`, ran in
     // createPayment) so there's nothing on-chain to cancel.
     return { success: true };

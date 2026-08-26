@@ -176,8 +176,21 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
 });
 
 describe('x402PaymentMethodHandler.cancelPayment', () => {
-  it('is a no-op success (no funds moved before settlement)', async () => {
-    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, {} as Payment, configArgs(), method);
+  it('is a no-op success when still Authorized (no funds moved before settlement)', async () => {
+    const payment = { state: 'Authorized', metadata: {} } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, payment, configArgs(), method);
     expect(result?.success).toBe(true);
+  });
+
+  it('rejects cancelling a Settled payment (irreversible on-chain transfer, no refund path)', async () => {
+    const payment = { state: 'Settled', metadata: { transaction: '0xabc' } } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, payment, configArgs(), method);
+    expect(result?.success).toBe(false);
+  });
+
+  it('rejects cancelling when a settlement transaction is recorded even if state lags', async () => {
+    const payment = { state: 'Authorized', metadata: { transaction: '0xabc' } } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, payment, configArgs(), method);
+    expect(result?.success).toBe(false);
   });
 });
