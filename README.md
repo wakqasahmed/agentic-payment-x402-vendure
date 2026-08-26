@@ -1,4 +1,11 @@
-# vendure-payment-x402
+# agentic-payment-x402-vendure
+
+> **Renamed from `vendure-payment-x402`.** The old npm package is deprecated (not removed) and points here. If you have `vendure-payment-x402` installed:
+> ```sh
+> npm uninstall vendure-payment-x402
+> npm install agentic-payment-x402-vendure
+> ```
+> and update the import: `import { X402Plugin } from 'agentic-payment-x402-vendure';`. No API changes — this is a package/repository identity rename only.
 
 An [x402](https://x402.org) stablecoin payment method for [Vendure](https://vendure.io) — lets AI shopping agents (and any x402-aware client) pay for Vendure orders directly, without a card or a traditional checkout UI.
 
@@ -18,11 +25,11 @@ x402's protocol has a natural two-step shape — `verify` (check a signed paymen
 ## Setup
 
 ```sh
-npm install vendure-payment-x402
+npm install agentic-payment-x402-vendure
 ```
 
 ```ts
-import { X402Plugin } from 'vendure-payment-x402';
+import { X402Plugin } from 'agentic-payment-x402-vendure';
 
 plugins: [
   X402Plugin.init(),
