@@ -4,6 +4,9 @@
   "description": "x402 stablecoin payment method for Vendure — lets AI shopping agents (and any x402-aware client) pay for Vendure orders via the x402 payments protocol.",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "homepage": "https://github.com/wakqasahmed/vendure-payment-x402",
   "repository": {
     "type": "git",
@@ -17,17 +20,19 @@
     "stablecoin",
     "payments"
   ],
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
     }
   },
   "files": ["dist"],
   "scripts": {
-    "build": "rimraf dist && tsc -p tsconfig.build.json",
+    "build": "rimraf dist && tsc -p tsconfig.build.esm.json && tsc -p tsconfig.build.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
