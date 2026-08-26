@@ -139,7 +139,7 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     // amount 0 exactly the same way a $0 order total would -- same guard, same test.
     const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
     expect(result.state).toBe('Declined');
-    expect(result.errorMessage).toContain('Nothing to charge');
+    expect(result.errorMessage).toContain('No outstanding balance');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
