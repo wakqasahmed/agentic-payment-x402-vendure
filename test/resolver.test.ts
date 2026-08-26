@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ConfigArg } from '@vendure/common/lib/generated-types';
 import type { ActiveOrderService, Order, PaymentMethod, PaymentMethodService, RequestContext } from '@vendure/core';
 
+import { X402_PAYMENT_METHOD_CODE } from '../src/constants.js';
 import { X402Resolver } from '../src/resolver.js';
 
 const ctx = undefined as unknown as RequestContext;
@@ -30,9 +31,9 @@ function makeResolver(args: ConfigArg[]) {
     getActiveOrder: vi.fn().mockResolvedValue({ currencyCode: 'USD', totalWithTax: 1099 } as Order),
   } as unknown as ActiveOrderService;
   const paymentMethodService = {
-    getMethodAndOperations: vi.fn().mockResolvedValue({
-      paymentMethod: { handler: { args } } as PaymentMethod,
-    }),
+    getActivePaymentMethods: vi.fn().mockResolvedValue([
+      { handler: { code: X402_PAYMENT_METHOD_CODE, args } } as unknown as PaymentMethod,
+    ]),
   } as unknown as PaymentMethodService;
   return new X402Resolver(activeOrderService, paymentMethodService);
 }
