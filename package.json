@@ -38,7 +38,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "release": "changeset publish"
+    "release": "changeset publish",
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
     "@nestjs/graphql": "^13.0.0",
