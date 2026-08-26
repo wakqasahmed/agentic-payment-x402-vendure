@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "declaration": false,
+    "outDir": "dist/cjs",
+    // TS's classic "Node" resolution predates conditional `exports` maps and
+    // can't see @x402/core's "require" condition for these subpaths -- at
+    // actual Node.js runtime this resolves correctly (Node's real resolver
+    // fully supports exports maps), this is purely a type-checking-time gap.
+    "paths": {
+      "@x402/core/http": ["./node_modules/@x402/core/dist/cjs/http/index.d.ts"],
+      "@x402/core/types": ["./node_modules/@x402/core/dist/cjs/types/index.d.ts"]
+    }
+  },
+  "include": ["src"]
+}
