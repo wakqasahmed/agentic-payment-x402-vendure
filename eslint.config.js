@@ -15,11 +15,13 @@ export default tseslint.config(
     },
   },
   {
-    // NestJS resolvers rely on emitDecoratorMetadata reading constructor
-    // parameter types at runtime for dependency injection, which requires
-    // real (not type-only) imports even though they're only referenced as
-    // types in the source.
-    files: ['src/resolver.ts'],
+    // Nest's DI relies on emitDecoratorMetadata reading constructor
+    // parameter types at runtime, which requires real (not type-only)
+    // imports even though they're only referenced as types in the source.
+    // Applies to both the GraphQL resolver and the plugin class, since both
+    // have constructor-injected dependencies (EventBus, OrderService,
+    // TransactionalConnection, PaymentMethodService, etc.).
+    files: ['src/resolver.ts', 'src/plugin.ts'],
     rules: {
       '@typescript-eslint/consistent-type-imports': 'off',
     },

@@ -19,6 +19,8 @@ x402's protocol has a natural two-step shape — `verify` (check a signed paymen
 | `cancelPayment` | no-op (nothing settled yet, so nothing to undo) |
 | `createRefund` | *omitted* — see [Known limitations](#known-limitations) |
 
+`createPayment` only verifies (no funds move) because the x402 authorization the buyer signed carries a short validity window (`maxTimeoutSeconds`, default 300s — for the `exact` EVM scheme this is the EIP-3009 `validBefore` baked into the signature itself). Rather than requiring an admin to click "Settle" within that window, this plugin auto-settles: see [Auto-settle](#auto-settle-authorized--settled).
+
 ## Setup
 
 ```sh
@@ -76,10 +78,24 @@ There's no server-issued "client secret" the way Stripe works. Instead:
      }) { ... }
    }
    ```
-4. Vendure calls `createPayment` (verifies, → `Authorized`), then `settlePayment` (settles on-chain, → `Settled`) as part of its normal payment flow.
+4. Vendure calls `createPayment`, which verifies the payload with the facilitator and transitions the Payment to `Authorized`. No funds have moved yet.
+
+## Auto-settle (`Authorized` → `Settled`)
+
+Vendure itself has no built-in path from `Authorized` to `Settled` — `settlePayment` is normally only invoked by an admin via the Admin API. Left alone, that's a problem for x402: the authorization's validity window (`maxTimeoutSeconds`) can lapse before a human gets to it, and the facilitator will then reject the settlement as expired even though the buyer's agent already believes it paid.
+
+To close that gap, this plugin subscribes to Vendure's `PaymentStateTransitionEvent` and, the moment a Payment backed by the **x402** handler reaches `Authorized`, calls `settlePayment` itself — well inside `maxTimeoutSeconds`, with no admin action required. This keeps the two-step verify/settle model (an admin can still manually settle or retry through the Admin API if needed) while making the common case fully automatic. Ownership is determined by resolving the Payment's PaymentMethod entity and checking its *handler* code, not the PaymentMethod's own (merchant-configurable) `code` — so this works no matter what you name the PaymentMethod in the Admin UI, and won't misfire for an unrelated PaymentMethod that happens to share a code with this handler.
+
+**If the auto-settle attempt fails, this plugin makes the failure visible — but the Payment is not guaranteed to leave `Authorized` in every case.**
+
+- If the facilitator rejects the settlement, Vendure's own `PaymentService.settlePayment` transitions the Payment to `Error` and records the failure reason as `payment.errorMessage`, visible on the order in the Admin UI. This plugin also logs the outcome via Vendure's `Logger` (tagged `x402`).
+- If `settlePayment` instead returns an error result *without* moving the Payment out of `Authorized` (e.g. the `Error` state transition itself is rejected), or an unexpected error is thrown (network/DB error), the Payment **can** remain at `Authorized`. This plugin logs these cases explicitly via `Logger.error` (tagged `x402`) so they show up in server logs, but resolving them still requires an admin to intervene manually.
+
+The plugin also guards against the state-transition event firing more than once for the same Payment (the event bus can in principle redeliver): it tracks in-flight settlement attempts per Payment ID and re-checks the Payment's current state immediately before calling `settlePayment`, so a duplicate event can't trigger a second settlement attempt once the first has started or finished.
 
 ## Known limitations
 
+- **No recovery across an app restart.** The event subscription is live-only: a Payment that reaches `Authorized` in the moments around a deploy, crash, or worker restart is not picked up retroactively — no event fires for it. It sits at `Authorized` until an admin settles it manually or it lapses past `maxTimeoutSeconds`. A startup reconciliation sweep would close this gap but is out of scope for this release.
 - **No automated refunds.** x402 `exact`-scheme settlements are on-chain token transfers; the protocol has no facilitator-side reversal endpoint, and this plugin never holds merchant private keys to construct one itself. `createRefund` is intentionally omitted — per Vendure's own `PaymentMethodHandler` docs, omitting it means refunds are settled manually by an administrator, which is correct here, not a missing feature.
 - **Single full-order payment only.** The requirements query quotes `order.totalWithTax`; split/partial payments across multiple methods aren't accounted for.
 - **1:1 peg assumption, no FX.** `pegCurrencyCode`/`pegCurrencyDecimals` are explicit configuration because Vendure doesn't expose a public per-currency decimals table to plugins — there's no automatic ISO 4217 lookup, and no price-oracle conversion for non-pegged assets.
