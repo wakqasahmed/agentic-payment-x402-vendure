@@ -180,13 +180,16 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
         paymentPayload,
         requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
         transaction: '0xAlreadySettled',
-        network: 'eip155:8453',
       },
     } as unknown as Payment;
 
     const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
     expect(result.success).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+    // Sourced from the configured args, not read back off stored metadata.
+    if (result.success) {
+      expect(result.metadata?.network).toBe('eip155:8453');
+    }
   });
 });
 

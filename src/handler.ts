@@ -216,7 +216,12 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     // fails (nonce already used) and would turn a successful settlement into a
     // spurious error on the second call -- short-circuit instead.
     if (stored?.transaction) {
-      return { success: true, metadata: { transaction: stored.transaction, network: (stored as { network?: string }).network } };
+      // args.network (this payment method's configured network) rather than
+      // reading it back off stored metadata -- the latter is only populated
+      // by a merge of this handler's own prior settlePayment return value,
+      // which is a fragile thing to depend on for a value that's already
+      // available directly from config.
+      return { success: true, metadata: { transaction: stored.transaction, network: args.network } };
     }
 
     if (!stored?.paymentPayload || !stored.requirements) {
