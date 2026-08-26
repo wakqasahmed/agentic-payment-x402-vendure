@@ -1,4 +1,4 @@
-import { LanguageCode, PaymentMethodHandler } from '@vendure/core';
+import { LanguageCode, Logger, PaymentMethodHandler } from '@vendure/core';
 import type {
   CancelPaymentResult,
   CreatePaymentErrorResult,
@@ -16,6 +16,9 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
+import { isValidCaip2Network } from './network.js';
+
+const LOGGER_CTX = 'x402';
 
 /**
  * The x402 `PaymentPayload` the buyer's agent/wallet produced when it signed
@@ -180,6 +183,16 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
+    if (!isValidCaip2Network(args.network)) {
+      return {
+        amount,
+        state: 'Declined' as const,
+        errorMessage:
+          `x402 payment method is misconfigured: "network" ("${args.network}") is not a valid ` +
+          'CAIP-2 identifier (e.g. "eip155:8453"). Reconfigure this payment method in the Admin UI.',
+      };
+    }
+
     const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
 
@@ -195,12 +208,29 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return {
         amount,
         state: 'Authorized' as const,
-        transactionId: result.payer,
+        // Not a transaction hash -- this is the payer's wallet address, the
+        // only identifier `verify` returns before anything settles. The real
+        // settlement hash lands in metadata.transaction once settlePayment
+        // succeeds; Vendure's SettlePaymentResult has no transactionId field
+        // to update this with later.
         metadata: { paymentPayload, requirements, payer: result.payer },
       };
     } catch (err) {
-      const message = err instanceof VerifyError ? err.message : (err as Error).message;
-      return { amount, state: 'Declined' as const, errorMessage: message };
+      // VerifyError wraps the facilitator's own structured invalidReason/
+      // invalidMessage from a valid JSON response -- safe to show the buyer.
+      // Anything else (a non-2xx/non-JSON response, a network error) can
+      // carry raw response bytes (e.g. an HTML error page) that shouldn't
+      // reach an anonymous Shop API caller; log it and return a generic
+      // message instead.
+      if (err instanceof VerifyError) {
+        return { amount, state: 'Declined' as const, errorMessage: err.message };
+      }
+      Logger.error(`x402 verify failed: ${(err as Error)?.message ?? String(err)}`, LOGGER_CTX, (err as Error)?.stack);
+      return {
+        amount,
+        state: 'Declined' as const,
+        errorMessage: 'Payment verification failed due to a facilitator error.',
+      };
     }
   },
   settlePayment: async (_ctx, _order, payment, args): Promise<SettlePaymentResult | SettlePaymentErrorResult> => {
@@ -224,7 +254,11 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       }
       return { success: true, metadata: { transaction: result.transaction, network: result.network } };
     } catch (err) {
-      const message = err instanceof SettleError ? err.message : (err as Error).message;
+      // Unlike createPayment's decline message, this reaches payment.errorMessage
+      // on the Admin-facing order view, not an anonymous Shop API caller -- no
+      // need to withhold facilitator error detail here, just avoid `undefined`
+      // for a non-Error throw.
+      const message = err instanceof SettleError ? err.message : ((err as Error)?.message ?? String(err));
       return { success: false, errorMessage: message };
     }
   },

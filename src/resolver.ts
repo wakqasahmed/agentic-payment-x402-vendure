@@ -2,6 +2,7 @@ import { Query, Resolver } from '@nestjs/graphql';
 import {
   ActiveOrderService,
   Ctx,
+  OrderService,
   PaymentMethodService,
   RequestContext,
   UserInputError,
@@ -9,11 +10,37 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
+import { isValidCaip2Network } from './network.js';
 import type { X402PaymentRequirementsResult } from './types.js';
 
-/** Raw `ConfigArg[]` -> plain object, coercing the `int` fields this handler defines. */
+/**
+ * Raw `ConfigArg[]` -> plain `{ name: value }` object. This does NOT coerce
+ * `int`-typed args to numbers -- every value stays a string here; `getInt`
+ * below does the actual coercion (and validates it) per field.
+ */
 function argsToRecord(args: Array<{ name: string; value: string }>): Record<string, string> {
   return Object.fromEntries(args.map(arg => [arg.name, arg.value]));
+}
+
+/**
+ * Payments that could plausibly still settle or already have, mirroring the
+ * state filter Vendure's own (internal, non-exported) `totalCoveredByPayments`
+ * helper uses. Settled refunds are netted out; unlike that helper, this does
+ * not additionally filter by state history depth -- fine for a same-request
+ * quote, not intended as a full ledger reconciliation.
+ */
+function totalCoveredByPayments(order: { payments?: Array<{ state: string; amount: number; refunds?: Array<{ state: string; total: number }> }> }): number {
+  const payments = (order.payments ?? []).filter(
+    p => p.state !== 'Error' && p.state !== 'Declined' && p.state !== 'Cancelled',
+  );
+  let total = 0;
+  for (const payment of payments) {
+    const settledRefundTotal = (payment.refunds ?? [])
+      .filter(r => r.state === 'Settled')
+      .reduce((sum, r) => sum + r.total, 0);
+    total += payment.amount - Math.abs(settledRefundTotal);
+  }
+  return total;
 }
 
 const INT_ARGS = new Set(['assetDecimals', 'pegCurrencyDecimals', 'maxTimeoutSeconds']);
@@ -24,6 +51,7 @@ export class X402Resolver {
   constructor(
     private activeOrderService: ActiveOrderService,
     private paymentMethodService: PaymentMethodService,
+    private orderService: OrderService,
   ) {}
 
   @Query()
@@ -59,7 +87,14 @@ export class X402Resolver {
       if (!INT_ARGS.has(name) || raw === undefined) {
         throw new Error(`Expected configured int arg "${name}" on the x402 payment method`);
       }
-      return Number(raw);
+      const value = Number(raw);
+      if (Number.isNaN(value)) {
+        throw new Error(
+          `Configured value "${raw}" for "${name}" on the x402 payment method is not a valid number. ` +
+            'Reconfigure this payment method in the Admin UI.',
+        );
+      }
+      return value;
     };
     const getString = (name: string): string => {
       const raw = args[name];
@@ -79,8 +114,23 @@ export class X402Resolver {
       );
     }
 
+    const network = getString('network');
+    if (!isValidCaip2Network(network)) {
+      throw new Error(
+        `x402 payment method is misconfigured: "network" ("${network}") is not a valid CAIP-2 ` +
+          'identifier (e.g. "eip155:8453"). Reconfigure this payment method in the Admin UI.',
+      );
+    }
+
+    // Quote the outstanding balance, not the order total -- after any partial
+    // payment (a different method, a gift card, etc.) the order total alone
+    // over-quotes what's actually still owed. This re-fetches the order with
+    // its payments relation since ActiveOrderService's result doesn't load it.
+    const orderWithPayments = await this.orderService.findOne(ctx, order.id, ['payments', 'payments.refunds']);
+    const outstandingBalance = order.totalWithTax - totalCoveredByPayments(orderWithPayments ?? order);
+
     const amount = toAtomicUnits(
-      order.totalWithTax,
+      Math.max(outstandingBalance, 0),
       getInt('pegCurrencyDecimals'),
       getInt('assetDecimals'),
     );
@@ -91,7 +141,7 @@ export class X402Resolver {
       // matching in current client SDKs (confirmed against @x402/core@2.19.0).
       x402Version: 2,
       scheme: args.scheme || 'exact',
-      network: getString('network'),
+      network,
       asset: getString('asset'),
       extra: { name: getString('assetName'), version: getString('assetVersion') },
       amount,

@@ -88,6 +88,33 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     // EIP-3009 signing/verification needs the asset's own EIP-712 domain --
     // without it the facilitator can't reconstruct the signed typed-data hash.
     expect(body.paymentRequirements.extra).toEqual({ name: 'USDC', version: '2' });
+    // Authorized has no transaction hash yet -- only settlePayment produces
+    // one. Setting transactionId to the payer address here would make every
+    // order from the same wallet share a Payment.transactionId.
+    expect(result.transactionId).toBeUndefined();
+  });
+
+  it('sanitizes a raw facilitator error (e.g. an HTML error page) before it reaches the buyer', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('<html>oops</html>', { status: 500 }));
+
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 1000, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).not.toContain('<html>');
+    expect(result.errorMessage).not.toContain('oops');
+  });
+
+  it('declines with a clear config error when network is not a valid CAIP-2 identifier', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs({ network: 'base' }),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('CAIP-2');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('declines with an actionable error when assetName/assetVersion are not configured', async () => {
