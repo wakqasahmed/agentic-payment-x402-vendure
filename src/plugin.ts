@@ -150,7 +150,7 @@ export class X402Plugin implements OnApplicationBootstrap {
       }
     } catch (err) {
       Logger.error(
-        `Auto-settle failed for x402 payment ${String(paymentId)}: ${(err as Error).message}`,
+        `Auto-settle failed for x402 payment ${String(paymentId)}: ${err instanceof Error ? err.message : String(err)}`,
         X402_PAYMENT_METHOD_CODE,
       );
     } finally {
