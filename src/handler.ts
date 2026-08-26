@@ -303,7 +303,7 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
   },
-  settlePayment: async (_ctx, _order, payment, args): Promise<SettlePaymentResult | SettlePaymentErrorResult> => {
+  settlePayment: async (_ctx, order, payment, args): Promise<SettlePaymentResult | SettlePaymentErrorResult> => {
     // Deliberately not nested under metadata.public: the signed payment
     // payload shouldn't be exposed back to the Shop API.
     const stored = payment.metadata as
@@ -338,6 +338,19 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       if (!result.success) {
         return { success: false, errorMessage: result.errorMessage || result.errorReason || 'Settlement failed.' };
       }
+      // Settlement is an on-chain transfer and is irreversible. PaymentService
+      // only persists this result (payment.metadata, state transition) *after*
+      // this call returns -- if that write fails (DB blip, deadlock), the tx
+      // hash would otherwise exist nowhere at all: funds moved, nothing records
+      // it. Log it durably the instant it succeeds, before returning, so a
+      // failed downstream write is still reconcilable from server logs instead
+      // of being silently lost.
+      Logger.info(
+        `x402 settled on-chain for payment ${payment.id} (order ${order.code}): ` +
+          `tx=${result.transaction} network=${result.network} amount=${result.amount ?? stored.requirements.amount}. ` +
+          "If this payment's state doesn't end up Settled, the DB write after this failed -- funds have moved, reconcile manually.",
+        LOGGER_CTX,
+      );
       return { success: true, metadata: { transaction: result.transaction, network: result.network } };
     } catch (err) {
       // Unlike createPayment's decline message, this reaches payment.errorMessage
