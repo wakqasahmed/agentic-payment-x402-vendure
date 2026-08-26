@@ -40,21 +40,13 @@ class FacilitatorTimeoutError extends Error {}
  * caller gets a clear, fast failure instead of an indefinite wait.
  */
 function withTimeout<T>(promise: Promise<T>, timeoutSeconds: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
       reject(new FacilitatorTimeoutError(`Facilitator ${label} timed out after ${timeoutSeconds}s.`));
     }, timeoutSeconds * 1000);
-    promise.then(
-      value => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      err => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
   });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
