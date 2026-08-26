@@ -1,5 +1,6 @@
 import { LanguageCode, PaymentMethodHandler } from '@vendure/core';
 import type {
+  CancelPaymentErrorResult,
   CancelPaymentResult,
   CreatePaymentErrorResult,
   CreatePaymentResult,
@@ -16,6 +17,7 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
+import { validatePaymentPayload } from './payment-payload.js';
 
 /**
  * The x402 `PaymentPayload` the buyer's agent/wallet produced when it signed
@@ -23,11 +25,9 @@ import { X402_PAYMENT_METHOD_CODE } from './constants.js';
  * There's no server-issued "client secret" here (unlike Stripe): the client
  * must first fetch requirements via the `activeOrderX402PaymentRequirements`
  * query this plugin adds to the Shop API, sign a matching payment, then
- * submit it as `metadata.paymentPayload`.
+ * submit it as `metadata.paymentPayload`. Validated by `validatePaymentPayload`
+ * against the server-built requirements before it's ever forwarded anywhere.
  */
-interface X402PaymentMetadata {
-  paymentPayload?: PaymentPayload;
-}
 
 /**
  * The x402 payment method for Vendure. Maps x402's verify/settle split onto
@@ -158,8 +158,8 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return { amount, state: 'Declined' as const, errorMessage: 'Nothing to charge for this order.' };
     }
 
-    const paymentPayload = (metadata as X402PaymentMetadata | undefined)?.paymentPayload;
-    if (!paymentPayload) {
+    const rawPaymentPayload = (metadata as { paymentPayload?: unknown } | undefined)?.paymentPayload;
+    if (!rawPaymentPayload) {
       return {
         amount,
         state: 'Declined' as const,
@@ -189,6 +189,13 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     }
 
     const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
+
+    const validationError = validatePaymentPayload(rawPaymentPayload, requirements);
+    if (validationError) {
+      return { amount, state: 'Declined' as const, errorMessage: validationError };
+    }
+    const paymentPayload = rawPaymentPayload as PaymentPayload;
+
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
 
     try {
@@ -215,8 +222,23 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     // Deliberately not nested under metadata.public: the signed payment
     // payload shouldn't be exposed back to the Shop API.
     const stored = payment.metadata as
-      | { paymentPayload?: PaymentPayload; requirements?: PaymentRequirements }
+      | { paymentPayload?: PaymentPayload; requirements?: PaymentRequirements; transaction?: string }
       | undefined;
+
+    // Nothing upstream prevents settlePayment being invoked twice for the same
+    // payment (PaymentService calls the handler before validating the state
+    // transition). Re-calling the facilitator with an already-settled payload
+    // fails (nonce already used) and would turn a successful settlement into a
+    // spurious error on the second call -- short-circuit instead.
+    if (stored?.transaction) {
+      // args.network (this payment method's configured network) rather than
+      // reading it back off stored metadata -- the latter is only populated
+      // by a merge of this handler's own prior settlePayment return value,
+      // which is a fragile thing to depend on for a value that's already
+      // available directly from config.
+      return { success: true, metadata: { transaction: stored.transaction, network: args.network } };
+    }
+
     if (!stored?.paymentPayload || !stored.requirements) {
       return {
         success: false,
@@ -236,7 +258,19 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return { success: false, errorMessage: message };
     }
   },
-  cancelPayment: async (): Promise<CancelPaymentResult> => {
+  cancelPayment: async (_ctx, _order, payment): Promise<CancelPaymentResult | CancelPaymentErrorResult> => {
+    // x402 exact-scheme settlements are on-chain transfers and are irreversible
+    // -- once `settlePayment` has run there is no way to "cancel" the money back,
+    // so refuse rather than silently reporting success with no refund path.
+    const settled = payment.metadata as { transaction?: string } | undefined;
+    if (payment.state === 'Settled' || settled?.transaction) {
+      return {
+        success: false,
+        errorMessage:
+          'This payment has already been settled on-chain and cannot be cancelled. ' +
+          'x402 exact-scheme transfers are irreversible -- issue a manual refund to the buyer instead.',
+      };
+    }
     // No funds have moved by this point (only `verify`, not `settle`, ran in
     // createPayment) so there's nothing on-chain to cancel.
     return { success: true };
