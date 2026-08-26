@@ -345,29 +345,57 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       // the facilitator's own settle response is the untrusted input, and a
       // mismatch means either a facilitator bug or an active attack, not a
       // retryable failure, so this fails closed instead of settling.
-      if (result.network !== args.network) {
+      //
+      // Compared against stored.requirements (frozen at authorize time and
+      // actually sent to /settle), not args (live config) -- an admin editing
+      // this payment method's config between authorize and settle must not
+      // turn a legitimate settlement into a false-positive mismatch.
+      //
+      // By the time we're here the facilitator has already returned
+      // success: true -- funds have moved on-chain. A mismatch still needs a
+      // durable, reconcilable record of that (tx hash + payer), not just an
+      // error return, so metadata.transaction/network are included in the
+      // failure result too: PaymentService merges metadata regardless of
+      // success (see payment.service.js), which keeps the idempotency
+      // short-circuit above able to recognize this settlement on a retry and
+      // keeps cancelPayment's "already settled" guard accurate.
+      if (result.network !== stored.requirements.network) {
         Logger.error(
           `x402 settle response network mismatch for payment ${payment.id} (order ${order.code}): ` +
-            `expected ${args.network}, facilitator returned ${result.network}. Refusing to mark settled -- ` +
-            'possible facilitator bug or compromised/MITM\'d facilitator.',
+            `expected ${stored.requirements.network}, facilitator returned ${result.network}. Refusing to mark ` +
+            "settled -- possible facilitator bug or compromised/MITM'd facilitator. " +
+            `tx=${result.transaction} payer=${result.payer ?? 'unknown'}. Funds may have moved on-chain -- reconcile manually.`,
           LOGGER_CTX,
         );
         return {
           success: false,
-          errorMessage: 'Settlement response network did not match the configured network.',
+          errorMessage: 'Settlement response network did not match the requested network.',
+          metadata: { transaction: result.transaction, network: result.network },
         };
       }
-      if (result.amount !== undefined && result.amount !== stored.requirements.amount) {
-        Logger.error(
-          `x402 settle response amount mismatch for payment ${payment.id} (order ${order.code}): ` +
-            `expected ${stored.requirements.amount}, facilitator returned ${result.amount}. Refusing to mark ` +
-            'settled -- possible facilitator bug or compromised/MITM\'d facilitator.',
-          LOGGER_CTX,
-        );
-        return {
-          success: false,
-          errorMessage: 'Settlement response amount did not match the requested amount.',
-        };
+      if (result.amount !== undefined) {
+        const settledAmount = BigInt(result.amount);
+        const requestedAmount = BigInt(stored.requirements.amount);
+        // `exact` scheme settlement amount must match exactly; schemes such
+        // as `upto` legitimately settle for less than (never more than) the
+        // authorized maximum -- see @x402/core's SettleResponse.amount doc.
+        const amountMismatch =
+          stored.requirements.scheme === 'exact' ? settledAmount !== requestedAmount : settledAmount > requestedAmount;
+        if (amountMismatch) {
+          Logger.error(
+            `x402 settle response amount mismatch for payment ${payment.id} (order ${order.code}, scheme ` +
+              `${stored.requirements.scheme}): requested ${stored.requirements.amount}, facilitator settled ` +
+              `${result.amount}. Refusing to mark settled -- possible facilitator bug or compromised/MITM'd ` +
+              `facilitator. tx=${result.transaction} payer=${result.payer ?? 'unknown'}. ` +
+              'Funds may have moved on-chain -- reconcile manually.',
+            LOGGER_CTX,
+          );
+          return {
+            success: false,
+            errorMessage: 'Settlement response amount did not satisfy the requested amount.',
+            metadata: { transaction: result.transaction, network: result.network },
+          };
+        }
       }
       // Settlement is an on-chain transfer and is irreversible. PaymentService
       // only persists this result (payment.metadata, state transition) *after*
