@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigArg } from '@vendure/common/lib/generated-types';
+import { Logger } from '@vendure/core';
 import type { Order, Payment, PaymentMethod, RequestContext } from '@vendure/core';
 
 import { x402PaymentMethodHandler } from '../src/handler.js';
@@ -34,7 +35,7 @@ function configArgsOmitting(names: string[]): ConfigArg[] {
 
 const ctx = undefined as unknown as RequestContext;
 const method = undefined as unknown as PaymentMethod;
-const order = { currencyCode: 'USD' } as Order;
+const order = { currencyCode: 'USD', code: 'TEST-ORDER-1' } as Order;
 
 // Matches the requirements built for a $10.00 (1000 cents) order under the
 // default configArgs() above: toAtomicUnits(1000, 2, 6) -> "10000000".
@@ -324,6 +325,36 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
     expect(result.success).toBe(true);
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe(`${FACILITATOR_URL}/settle`);
+  });
+
+  it('logs the tx hash the instant settlement succeeds, before returning to PaymentService', async () => {
+    // PaymentService only persists payment.metadata/state *after* this
+    // handler returns -- if that write fails, the tx hash needs to already
+    // be somewhere durable (server logs), not just in the return value.
+    const infoSpy = vi.spyOn(Logger, 'info').mockImplementation(() => undefined);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xDurableTx', network: 'eip155:8453' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-42',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = infoSpy.mock.calls[0];
+    expect(loggedMessage).toContain('0xDurableTx');
+    expect(loggedMessage).toContain('payment-42');
+    infoSpy.mockRestore();
   });
 
   it('fails when createPayment metadata is missing', async () => {
