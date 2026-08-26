@@ -16,6 +16,7 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
+import { validatePaymentPayload } from './payment-payload.js';
 
 /**
  * The x402 `PaymentPayload` the buyer's agent/wallet produced when it signed
@@ -23,11 +24,9 @@ import { X402_PAYMENT_METHOD_CODE } from './constants.js';
  * There's no server-issued "client secret" here (unlike Stripe): the client
  * must first fetch requirements via the `activeOrderX402PaymentRequirements`
  * query this plugin adds to the Shop API, sign a matching payment, then
- * submit it as `metadata.paymentPayload`.
+ * submit it as `metadata.paymentPayload`. Validated by `validatePaymentPayload`
+ * against the server-built requirements before it's ever forwarded anywhere.
  */
-interface X402PaymentMetadata {
-  paymentPayload?: PaymentPayload;
-}
 
 /**
  * The x402 payment method for Vendure. Maps x402's verify/settle split onto
@@ -150,8 +149,8 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
-    const paymentPayload = (metadata as X402PaymentMetadata | undefined)?.paymentPayload;
-    if (!paymentPayload) {
+    const rawPaymentPayload = (metadata as { paymentPayload?: unknown } | undefined)?.paymentPayload;
+    if (!rawPaymentPayload) {
       return {
         amount,
         state: 'Declined' as const,
@@ -181,6 +180,13 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     }
 
     const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
+
+    const validationError = validatePaymentPayload(rawPaymentPayload, requirements);
+    if (validationError) {
+      return { amount, state: 'Declined' as const, errorMessage: validationError };
+    }
+    const paymentPayload = rawPaymentPayload as PaymentPayload;
+
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
 
     try {
