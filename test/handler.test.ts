@@ -404,6 +404,169 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
       expect(result.metadata?.network).toBe('eip155:8453');
     }
   });
+
+  it('settles when the facilitator response amount/network match what was requested', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453', amount: '10000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-match',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(true);
+  });
+
+  it('fails closed without settling when the facilitator response amount does not match the requested amount (exact scheme)', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453', amount: '1' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-bad-amount',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('amount');
+      // Funds already moved on-chain (facilitator returned success: true) --
+      // the tx hash must still be recorded so it isn't lost, and so the
+      // idempotency short-circuit / cancelPayment can find it on a retry.
+      expect(result.metadata?.transaction).toBe('0xTx');
+    }
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = errorSpy.mock.calls[0];
+    expect(loggedMessage).toContain('amount mismatch');
+    expect(loggedMessage).toContain('0xTx');
+    errorSpy.mockRestore();
+  });
+
+  it('settles a legitimate partial payment under the upto scheme without treating it as a mismatch', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xPartialTx', network: 'eip155:8453', amount: '7000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-upto-partial',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'upto', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs({ scheme: 'upto' }), method);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.metadata?.transaction).toBe('0xPartialTx');
+    }
+  });
+
+  it('fails closed when the upto scheme settlement amount exceeds the authorized maximum', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xOverTx', network: 'eip155:8453', amount: '11000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-upto-over',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'upto', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs({ scheme: 'upto' }), method);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('amount');
+      expect(result.metadata?.transaction).toBe('0xOverTx');
+    }
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  it('fails closed without settling when the facilitator response network does not match the requirements actually sent to /settle', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:1', amount: '10000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-bad-network',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('network');
+      expect(result.metadata?.transaction).toBe('0xTx');
+    }
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = errorSpy.mock.calls[0];
+    expect(loggedMessage).toContain('network mismatch');
+    expect(loggedMessage).toContain('0xTx');
+    errorSpy.mockRestore();
+  });
+
+  it('does not false-positive on network when live config has changed since authorize time, as long as the facilitator response matches the frozen requirements', async () => {
+    // stored.requirements.network was frozen from args.network at authorize
+    // time. If an admin edits the payment method's network config before
+    // settlePayment runs, args.network here is stale/different -- the
+    // facilitator was still sent (and correctly echoes) stored.requirements.network,
+    // which must be treated as a match, not a mismatch.
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453', amount: '10000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-config-drift',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    // args.network now points at a different chain than what was frozen in
+    // stored.requirements.network at authorize time.
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs({ network: 'eip155:1' }), method);
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('x402PaymentMethodHandler.cancelPayment', () => {
