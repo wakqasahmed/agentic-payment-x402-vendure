@@ -29,7 +29,7 @@ const method = undefined as unknown as PaymentMethod;
 const order = { currencyCode: 'USD' } as Order;
 
 const paymentPayload = {
-  x402Version: 1,
+  x402Version: 2,
   accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '1000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
   payload: { signature: 'fake' },
 } as unknown as Record<string, unknown>;
@@ -88,6 +88,21 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     // EIP-3009 signing/verification needs the asset's own EIP-712 domain --
     // without it the facilitator can't reconstruct the signed typed-data hash.
     expect(body.paymentRequirements.extra).toEqual({ name: 'USDC', version: '2' });
+  });
+
+  it('declines with an actionable error when assetName/assetVersion are not configured', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs({ assetName: '', assetVersion: '' }),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('assetName');
+    expect(result.errorMessage).toContain('assetVersion');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('declines when the facilitator reports the payment as invalid', async () => {

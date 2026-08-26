@@ -62,8 +62,7 @@ There's no server-issued "client secret" the way Stripe works. Instead:
        scheme
        network
        asset
-       assetName
-       assetVersion
+       extra { name version }
        amount
        payTo
        maxTimeoutSeconds

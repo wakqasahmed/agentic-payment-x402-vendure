@@ -169,6 +169,17 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return { amount, state: 'Declined' as const, errorMessage: (err as Error).message };
     }
 
+    if (!args.assetName || !args.assetVersion) {
+      return {
+        amount,
+        state: 'Declined' as const,
+        errorMessage:
+          'x402 payment method is missing required "assetName"/"assetVersion" config. ' +
+          "Reconfigure this payment method in the Admin UI with the asset's EIP-712 domain " +
+          'name and version before accepting payments.',
+      };
+    }
+
     const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
 
