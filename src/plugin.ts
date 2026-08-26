@@ -25,7 +25,7 @@ import { X402Resolver } from './resolver.js';
  * ## Setup
  *
  * ```ts
- * import { X402Plugin } from 'vendure-payment-x402';
+ * import { X402Plugin } from 'agentic-payment-x402-vendure';
  *
  * plugins: [
  *   X402Plugin.init(),
