@@ -338,6 +338,37 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       if (!result.success) {
         return { success: false, errorMessage: result.errorMessage || result.errorReason || 'Settlement failed.' };
       }
+      // The facilitator is a third party (potentially compromised or MITM'd,
+      // or just buggy) -- don't trust its reported network/amount blindly.
+      // Same skepticism as the already-settled short-circuit above, which
+      // deliberately reads args.network instead of trusting stored data: here
+      // the facilitator's own settle response is the untrusted input, and a
+      // mismatch means either a facilitator bug or an active attack, not a
+      // retryable failure, so this fails closed instead of settling.
+      if (result.network !== args.network) {
+        Logger.error(
+          `x402 settle response network mismatch for payment ${payment.id} (order ${order.code}): ` +
+            `expected ${args.network}, facilitator returned ${result.network}. Refusing to mark settled -- ` +
+            'possible facilitator bug or compromised/MITM\'d facilitator.',
+          LOGGER_CTX,
+        );
+        return {
+          success: false,
+          errorMessage: 'Settlement response network did not match the configured network.',
+        };
+      }
+      if (result.amount !== undefined && result.amount !== stored.requirements.amount) {
+        Logger.error(
+          `x402 settle response amount mismatch for payment ${payment.id} (order ${order.code}): ` +
+            `expected ${stored.requirements.amount}, facilitator returned ${result.amount}. Refusing to mark ` +
+            'settled -- possible facilitator bug or compromised/MITM\'d facilitator.',
+          LOGGER_CTX,
+        );
+        return {
+          success: false,
+          errorMessage: 'Settlement response amount did not match the requested amount.',
+        };
+      }
       // Settlement is an on-chain transfer and is irreversible. PaymentService
       // only persists this result (payment.metadata, state transition) *after*
       // this call returns -- if that write fails (DB blip, deadlock), the tx

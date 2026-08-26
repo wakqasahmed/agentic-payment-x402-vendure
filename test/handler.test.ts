@@ -404,6 +404,84 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
       expect(result.metadata?.network).toBe('eip155:8453');
     }
   });
+
+  it('settles when the facilitator response amount/network match what was requested', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453', amount: '10000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-match',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(true);
+  });
+
+  it('fails closed without settling when the facilitator response amount does not match the requested amount', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453', amount: '1' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-bad-amount',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('amount');
+    }
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = errorSpy.mock.calls[0];
+    expect(loggedMessage).toContain('amount mismatch');
+    errorSpy.mockRestore();
+  });
+
+  it('fails closed without settling when the facilitator response network does not match the configured network', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:1', amount: '10000000' }),
+        { status: 200 },
+      ),
+    );
+
+    const payment = {
+      id: 'payment-bad-network',
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('network');
+    }
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = errorSpy.mock.calls[0];
+    expect(loggedMessage).toContain('network mismatch');
+    errorSpy.mockRestore();
+  });
 });
 
 describe('x402PaymentMethodHandler.cancelPayment', () => {
