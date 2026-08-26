@@ -1,9 +1,10 @@
-import { LanguageCode, Logger, PaymentMethodHandler } from '@vendure/core';
+import { LanguageCode, Logger, OrderService, PaymentMethodHandler } from '@vendure/core';
 import type {
   CancelPaymentErrorResult,
   CancelPaymentResult,
   CreatePaymentErrorResult,
   CreatePaymentResult,
+  Injector,
   SettlePaymentErrorResult,
   SettlePaymentResult,
 } from '@vendure/core';
@@ -18,9 +19,17 @@ import {
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
 import { isValidCaip2Network } from './network.js';
+import { totalCoveredByPayments } from './order-total.js';
 import { validatePaymentPayload } from './payment-payload.js';
 
 const LOGGER_CTX = 'x402';
+
+/**
+ * Injected via the `init()` hook below so `settlePayment` can re-fetch the
+ * order's sibling payments immediately before settling -- see the drift
+ * check in `settlePayment` for why.
+ */
+let orderService: OrderService | undefined;
 
 /**
  * The x402 `PaymentPayload` the buyer's agent/wallet produced when it signed
@@ -68,6 +77,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutSeconds: number, label: stri
 export const x402PaymentMethodHandler = new PaymentMethodHandler({
   code: X402_PAYMENT_METHOD_CODE,
   description: [{ languageCode: LanguageCode.en, value: 'Pay with x402 (stablecoin)' }],
+  init(injector: Injector) {
+    orderService = injector.get(OrderService);
+  },
   args: {
     facilitatorUrl: {
       type: 'string',
@@ -303,7 +315,7 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
   },
-  settlePayment: async (_ctx, order, payment, args): Promise<SettlePaymentResult | SettlePaymentErrorResult> => {
+  settlePayment: async (ctx, order, payment, args): Promise<SettlePaymentResult | SettlePaymentErrorResult> => {
     // Deliberately not nested under metadata.public: the signed payment
     // payload shouldn't be exposed back to the Shop API.
     const stored = payment.metadata as
@@ -329,6 +341,43 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
         success: false,
         errorMessage: 'Missing stored x402 payment payload/requirements from the authorize step.',
       };
+    }
+
+    // requirements.amount was frozen at createPayment time from the order's
+    // outstanding balance *then*. An admin can edit the order (add/remove
+    // lines, change shipping, etc.) between authorize and settle -- checking
+    // only `maxTimeoutSeconds` (EIP-3009 `validBefore`) doesn't catch a
+    // same-window edit followed by a fast settle. Re-fetch the order's
+    // current outstanding balance (excluding this payment itself, which is
+    // already Authorized and would otherwise double-count against its own
+    // requirement) and fail closed -- without ever calling the facilitator --
+    // if it no longer matches what was authorized.
+    const freshOrder = await orderService?.findOne(ctx, order.id, ['payments', 'payments.refunds']);
+    if (freshOrder) {
+      const otherPayments = (freshOrder.payments ?? []).filter(p => p.id !== payment.id);
+      const currentOutstandingBalance = Math.max(freshOrder.totalWithTax - totalCoveredByPayments(otherPayments), 0);
+      const pegCurrencyDecimals = (args.pegCurrencyDecimals as number | undefined) ?? 2;
+
+      let currentAtomicAmount: string;
+      try {
+        currentAtomicAmount = toAtomicUnits(currentOutstandingBalance, pegCurrencyDecimals, args.assetDecimals);
+      } catch (err) {
+        return { success: false, errorMessage: (err as Error).message };
+      }
+
+      if (BigInt(currentAtomicAmount) !== BigInt(stored.requirements.amount)) {
+        Logger.error(
+          `x402 order total drift for payment ${payment.id} (order ${order.code}): requirements.amount ` +
+            `${stored.requirements.amount} was frozen at authorize time, but the order's current outstanding ` +
+            `balance now converts to ${currentAtomicAmount}. Refusing to settle -- order total changed since ` +
+            'payment was authorized.',
+          LOGGER_CTX,
+        );
+        return {
+          success: false,
+          errorMessage: 'Order total changed since payment was authorized. Refusing to settle.',
+        };
+      }
     }
 
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });

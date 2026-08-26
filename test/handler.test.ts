@@ -569,6 +569,97 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
   });
 });
 
+describe('x402PaymentMethodHandler.settlePayment order total drift check (#39)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let findOneMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    findOneMock = vi.fn();
+    const mockOrderService = { findOne: findOneMock };
+    await x402PaymentMethodHandler.init({ get: () => mockOrderService } as unknown as Parameters<
+      typeof x402PaymentMethodHandler.init
+    >[0]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function makePayment(id: string) {
+    return {
+      id,
+      metadata: {
+        paymentPayload,
+        requirements: {
+          scheme: 'exact',
+          network: 'eip155:8453',
+          asset: '0xUSDC',
+          amount: '10000000', // frozen at authorize time for a $10.00 order
+          payTo: '0xMerchant',
+          maxTimeoutSeconds: 300,
+          extra: {},
+        },
+      },
+    } as unknown as Payment;
+  }
+
+  it('settles normally when the order total is unchanged since authorize', async () => {
+    findOneMock.mockResolvedValueOnce({
+      totalWithTax: 1000, // still $10.00
+      payments: [{ id: 'payment-unchanged', state: 'Authorized', amount: 1000, refunds: [] }],
+    });
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453' }), { status: 200 }),
+    );
+
+    const payment = makePayment('payment-unchanged');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed without calling the facilitator when the order total changed since authorize', async () => {
+    const errorSpy = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+    findOneMock.mockResolvedValueOnce({
+      totalWithTax: 2000, // admin edit bumped the order to $20.00
+      payments: [{ id: 'payment-changed', state: 'Authorized', amount: 1000, refunds: [] }],
+    });
+
+    const payment = makePayment('payment-changed');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('Order total changed');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('excludes the payment being settled itself from the outstanding-balance recomputation', async () => {
+    // The Payment being settled is already Authorized and present in
+    // freshOrder.payments -- if it weren't excluded, its own amount would be
+    // double-counted against the outstanding balance it's supposed to cover,
+    // producing a false-positive drift failure on every settle.
+    findOneMock.mockResolvedValueOnce({
+      totalWithTax: 1000,
+      payments: [{ id: 'payment-self', state: 'Authorized', amount: 1000, refunds: [] }],
+    });
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: true, transaction: '0xTx', network: 'eip155:8453' }), { status: 200 }),
+    );
+
+    const payment = makePayment('payment-self');
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('x402PaymentMethodHandler.cancelPayment', () => {
   it('is a no-op success when still Authorized (no funds moved before settlement)', async () => {
     const payment = { state: 'Authorized', metadata: {} } as unknown as Payment;
