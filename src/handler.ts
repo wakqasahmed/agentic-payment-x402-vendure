@@ -1,5 +1,6 @@
 import { LanguageCode, PaymentMethodHandler } from '@vendure/core';
 import type {
+  CancelPaymentErrorResult,
   CancelPaymentResult,
   CreatePaymentErrorResult,
   CreatePaymentResult,
@@ -16,6 +17,7 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
+import { validatePaymentPayload } from './payment-payload.js';
 
 /**
  * The x402 `PaymentPayload` the buyer's agent/wallet produced when it signed
@@ -23,10 +25,28 @@ import { X402_PAYMENT_METHOD_CODE } from './constants.js';
  * There's no server-issued "client secret" here (unlike Stripe): the client
  * must first fetch requirements via the `activeOrderX402PaymentRequirements`
  * query this plugin adds to the Shop API, sign a matching payment, then
- * submit it as `metadata.paymentPayload`.
+ * submit it as `metadata.paymentPayload`. Validated by `validatePaymentPayload`
+ * against the server-built requirements before it's ever forwarded anywhere.
  */
-interface X402PaymentMetadata {
-  paymentPayload?: PaymentPayload;
+
+class FacilitatorTimeoutError extends Error {}
+
+/**
+ * `HTTPFacilitatorClient.verify`/`settle` call `fetch` internally with no
+ * `AbortSignal`, and Node's `fetch` has no default timeout -- a black-holed
+ * or slow facilitator would otherwise hang `createPayment`/`settlePayment`
+ * indefinitely. This can't cancel the underlying request (no way to pass an
+ * AbortSignal through), but it does stop the handler from hanging so the
+ * caller gets a clear, fast failure instead of an indefinite wait.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutSeconds: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new FacilitatorTimeoutError(`Facilitator ${label} timed out after ${timeoutSeconds}s.`));
+    }, timeoutSeconds * 1000);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -138,6 +158,18 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       defaultValue: 300,
       label: [{ languageCode: LanguageCode.en, value: 'Max timeout (seconds)' }],
     },
+    facilitatorTimeoutSeconds: {
+      type: 'int',
+      required: false,
+      defaultValue: 30,
+      label: [{ languageCode: LanguageCode.en, value: 'Facilitator HTTP timeout (seconds)' }],
+      description: [
+        {
+          languageCode: LanguageCode.en,
+          value: 'How long to wait for the facilitator to respond to verify/settle before failing fast.',
+        },
+      ],
+    },
   },
   createPayment: async (_ctx, order, amount, args, metadata): Promise<CreatePaymentResult | CreatePaymentErrorResult> => {
     if (order.currencyCode !== args.pegCurrencyCode) {
@@ -150,8 +182,20 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
-    const paymentPayload = (metadata as X402PaymentMetadata | undefined)?.paymentPayload;
-    if (!paymentPayload) {
+    if (amount <= 0) {
+      // Zero: a fully-discounted order, or the remaining balance on a
+      // partially-paid order -- a facilitator that only checks
+      // signedValue >= requiredAmount would treat almost any payload as
+      // satisfying a $0 requirement, so don't round-trip to it at all.
+      // Negative shouldn't be reachable in practice (Vendure computes this
+      // as totalWithTax - totalCoveredByPayments, which a well-formed order
+      // never overshoots), but toAtomicUnits() below only rejects negative
+      // integers, not zero, so the guard has to live here regardless of sign.
+      return { amount, state: 'Declined' as const, errorMessage: 'No outstanding balance to charge for this order.' };
+    }
+
+    const rawPaymentPayload = (metadata as { paymentPayload?: unknown } | undefined)?.paymentPayload;
+    if (!rawPaymentPayload) {
       return {
         amount,
         state: 'Declined' as const,
@@ -162,9 +206,18 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
+    // Vendure's argsArrayToHash only copies args actually present in the
+    // stored config -- it never falls back to `defaultValue` for an optional
+    // arg an admin left unset. ConfigArgValues<T> also (mis)types these as
+    // plain `number`/`string` even though `required: false`, so nothing warns
+    // about this at compile time; the `as ... | undefined` casts below make
+    // the real runtime type explicit before applying the documented default
+    // ourselves.
+    const pegCurrencyDecimals = (args.pegCurrencyDecimals as number | undefined) ?? 2;
+
     let requiredAtomicAmount: string;
     try {
-      requiredAtomicAmount = toAtomicUnits(amount, args.pegCurrencyDecimals, args.assetDecimals);
+      requiredAtomicAmount = toAtomicUnits(amount, pegCurrencyDecimals, args.assetDecimals);
     } catch (err) {
       return { amount, state: 'Declined' as const, errorMessage: (err as Error).message };
     }
@@ -180,11 +233,26 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
-    const requirements = buildPaymentRequirements(args, requiredAtomicAmount);
+    const requirements = buildPaymentRequirements(
+      {
+        ...args,
+        scheme: (args.scheme as string | undefined) ?? 'exact',
+        maxTimeoutSeconds: (args.maxTimeoutSeconds as number | undefined) ?? 300,
+      },
+      requiredAtomicAmount,
+    );
+
+    const validationError = validatePaymentPayload(rawPaymentPayload, requirements);
+    if (validationError) {
+      return { amount, state: 'Declined' as const, errorMessage: validationError };
+    }
+    const paymentPayload = rawPaymentPayload as PaymentPayload;
+
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
+    const facilitatorTimeoutSeconds = args.facilitatorTimeoutSeconds ?? 30;
 
     try {
-      const result = await facilitator.verify(paymentPayload, requirements);
+      const result = await withTimeout(facilitator.verify(paymentPayload, requirements), facilitatorTimeoutSeconds, 'verify');
       if (!result.isValid) {
         return {
           amount,
@@ -207,8 +275,23 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     // Deliberately not nested under metadata.public: the signed payment
     // payload shouldn't be exposed back to the Shop API.
     const stored = payment.metadata as
-      | { paymentPayload?: PaymentPayload; requirements?: PaymentRequirements }
+      | { paymentPayload?: PaymentPayload; requirements?: PaymentRequirements; transaction?: string }
       | undefined;
+
+    // Nothing upstream prevents settlePayment being invoked twice for the same
+    // payment (PaymentService calls the handler before validating the state
+    // transition). Re-calling the facilitator with an already-settled payload
+    // fails (nonce already used) and would turn a successful settlement into a
+    // spurious error on the second call -- short-circuit instead.
+    if (stored?.transaction) {
+      // args.network (this payment method's configured network) rather than
+      // reading it back off stored metadata -- the latter is only populated
+      // by a merge of this handler's own prior settlePayment return value,
+      // which is a fragile thing to depend on for a value that's already
+      // available directly from config.
+      return { success: true, metadata: { transaction: stored.transaction, network: args.network } };
+    }
+
     if (!stored?.paymentPayload || !stored.requirements) {
       return {
         success: false,
@@ -217,8 +300,9 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
     }
 
     const facilitator = new HTTPFacilitatorClient({ url: args.facilitatorUrl || undefined });
+    const facilitatorTimeoutSeconds = args.facilitatorTimeoutSeconds ?? 30;
     try {
-      const result = await facilitator.settle(stored.paymentPayload, stored.requirements);
+      const result = await withTimeout(facilitator.settle(stored.paymentPayload, stored.requirements), facilitatorTimeoutSeconds, 'settle');
       if (!result.success) {
         return { success: false, errorMessage: result.errorMessage || result.errorReason || 'Settlement failed.' };
       }
@@ -228,7 +312,19 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       return { success: false, errorMessage: message };
     }
   },
-  cancelPayment: async (): Promise<CancelPaymentResult> => {
+  cancelPayment: async (_ctx, _order, payment): Promise<CancelPaymentResult | CancelPaymentErrorResult> => {
+    // x402 exact-scheme settlements are on-chain transfers and are irreversible
+    // -- once `settlePayment` has run there is no way to "cancel" the money back,
+    // so refuse rather than silently reporting success with no refund path.
+    const settled = payment.metadata as { transaction?: string } | undefined;
+    if (payment.state === 'Settled' || settled?.transaction) {
+      return {
+        success: false,
+        errorMessage:
+          'This payment has already been settled on-chain and cannot be cancelled. ' +
+          'x402 exact-scheme transfers are irreversible -- issue a manual refund to the buyer instead.',
+      };
+    }
     // No funds have moved by this point (only `verify`, not `settle`, ran in
     // createPayment) so there's nothing on-chain to cancel.
     return { success: true };

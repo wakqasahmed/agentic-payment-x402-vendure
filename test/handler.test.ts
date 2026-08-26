@@ -19,18 +19,28 @@ function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
     pegCurrencyDecimals: '2',
     scheme: 'exact',
     maxTimeoutSeconds: '300',
+    facilitatorTimeoutSeconds: '30',
     ...overrides,
   };
   return Object.entries(defaults).map(([name, value]) => ({ name, value }));
+}
+
+/** Simulates an admin leaving an optional arg genuinely unset in the Admin UI
+ * (not just empty) -- the ConfigArg entry is entirely absent from the stored
+ * array, which is what `argsArrayToHash` actually receives. */
+function configArgsOmitting(names: string[]): ConfigArg[] {
+  return configArgs().filter(arg => !names.includes(arg.name));
 }
 
 const ctx = undefined as unknown as RequestContext;
 const method = undefined as unknown as PaymentMethod;
 const order = { currencyCode: 'USD' } as Order;
 
+// Matches the requirements built for a $10.00 (1000 cents) order under the
+// default configArgs() above: toAtomicUnits(1000, 2, 6) -> "10000000".
 const paymentPayload = {
   x402Version: 2,
-  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '1000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
   payload: { signature: 'fake' },
 } as unknown as Record<string, unknown>;
 
@@ -90,6 +100,30 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     expect(body.paymentRequirements.extra).toEqual({ name: 'USDC', version: '2' });
   });
 
+  it('applies documented defaults for pegCurrencyDecimals/scheme/maxTimeoutSeconds when left unset', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ isValid: true, payer: '0xBuyer' }), { status: 200 }),
+    );
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000, // $10.00 in cents
+      configArgsOmitting(['pegCurrencyDecimals', 'scheme', 'maxTimeoutSeconds']),
+      { paymentPayload },
+      method,
+    );
+
+    // Before the fix this computed 6 - undefined = NaN, and the buyer saw
+    // "The number NaN cannot be converted to a BigInt because it is not an integer".
+    expect(result.state).toBe('Authorized');
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.paymentRequirements.amount).toBe('10000000'); // defaulted pegCurrencyDecimals: 2
+    expect(body.paymentRequirements.scheme).toBe('exact');
+    expect(body.paymentRequirements.maxTimeoutSeconds).toBe(300);
+  });
+
   it('declines with an actionable error when assetName/assetVersion are not configured', async () => {
     const result = await x402PaymentMethodHandler.createPayment(
       ctx,
@@ -123,6 +157,104 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     );
     expect(result.state).toBe('Declined');
     expect(result.errorMessage).toContain('insufficient_funds');
+  });
+
+  it('fails fast with a clear error when the facilitator hangs, instead of waiting forever', async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {})); // never resolves
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs({ facilitatorTimeoutSeconds: '0' }),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('timed out');
+  });
+
+  it('declines a zero-amount payment without calling the facilitator (fully-discounted order)', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines a zero-amount payment for the ArrangingAdditionalPayment zero-remaining-balance case', async () => {
+    // Vendure computes `amount` as `amountToPay = totalWithTax - totalCoveredByPayments`
+    // before calling this handler, so a fully-covered order reaches createPayment with
+    // amount 0 exactly the same way a $0 order total would -- same guard, same test.
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('No outstanding balance');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload whose signed amount does not match the order total, without calling the facilitator', async () => {
+    // Signed for $1 (1000000 atomic units) against a $10.00 (1000-cent) order.
+    // Previously this reached the facilitator and was authorized purely on
+    // trust that the facilitator would catch the mismatch server-side.
+    const mismatchedPayload = {
+      ...paymentPayload,
+      accepted: { ...(paymentPayload as { accepted: Record<string, unknown> }).accepted, amount: '1000000' },
+    };
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: mismatchedPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('amount');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed payload (not an object) before calling the facilitator', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: 'not-an-object' },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload missing required fields before calling the facilitator', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: { x402Version: 2 } },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized payload before calling the facilitator', async () => {
+    const oversizedPayload = {
+      ...paymentPayload,
+      payload: { signature: 'x'.repeat(20 * 1024) },
+    };
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs(),
+      { paymentPayload: oversizedPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('size');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -173,11 +305,65 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
     expect(result.success).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('fails fast with a clear error when the facilitator hangs on settle', async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {})); // never resolves
+
+    const payment = {
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(
+      ctx,
+      order,
+      payment,
+      configArgs({ facilitatorTimeoutSeconds: '0' }),
+      method,
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain('timed out');
+    }
+  });
+
+  it('is idempotent: a payment already carrying a settlement transaction short-circuits without re-calling the facilitator', async () => {
+    const payment = {
+      metadata: {
+        paymentPayload,
+        requirements: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+        transaction: '0xAlreadySettled',
+      },
+    } as unknown as Payment;
+
+    const result = await x402PaymentMethodHandler.settlePayment(ctx, order, payment, configArgs(), method);
+    expect(result.success).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Sourced from the configured args, not read back off stored metadata.
+    if (result.success) {
+      expect(result.metadata?.network).toBe('eip155:8453');
+    }
+  });
 });
 
 describe('x402PaymentMethodHandler.cancelPayment', () => {
-  it('is a no-op success (no funds moved before settlement)', async () => {
-    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, {} as Payment, configArgs(), method);
+  it('is a no-op success when still Authorized (no funds moved before settlement)', async () => {
+    const payment = { state: 'Authorized', metadata: {} } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, payment, configArgs(), method);
     expect(result?.success).toBe(true);
+  });
+
+  it('rejects cancelling a Settled payment (irreversible on-chain transfer, no refund path)', async () => {
+    const payment = { state: 'Settled', metadata: { transaction: '0xabc' } } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, payment, configArgs(), method);
+    expect(result?.success).toBe(false);
+  });
+
+  it('rejects cancelling when a settlement transaction is recorded even if state lags', async () => {
+    const payment = { state: 'Authorized', metadata: { transaction: '0xabc' } } as unknown as Payment;
+    const result = await x402PaymentMethodHandler.cancelPayment(ctx, order, payment, configArgs(), method);
+    expect(result?.success).toBe(false);
   });
 });
