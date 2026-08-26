@@ -150,6 +150,18 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       };
     }
 
+    if (amount <= 0) {
+      // Zero: a fully-discounted order, or the remaining balance on a
+      // partially-paid order -- a facilitator that only checks
+      // signedValue >= requiredAmount would treat almost any payload as
+      // satisfying a $0 requirement, so don't round-trip to it at all.
+      // Negative shouldn't be reachable in practice (Vendure computes this
+      // as totalWithTax - totalCoveredByPayments, which a well-formed order
+      // never overshoots), but toAtomicUnits() below only rejects negative
+      // integers, not zero, so the guard has to live here regardless of sign.
+      return { amount, state: 'Declined' as const, errorMessage: 'No outstanding balance to charge for this order.' };
+    }
+
     const rawPaymentPayload = (metadata as { paymentPayload?: unknown } | undefined)?.paymentPayload;
     if (!rawPaymentPayload) {
       return {

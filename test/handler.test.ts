@@ -127,6 +127,22 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     expect(result.errorMessage).toContain('insufficient_funds');
   });
 
+  it('declines a zero-amount payment without calling the facilitator (fully-discounted order)', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines a zero-amount payment for the ArrangingAdditionalPayment zero-remaining-balance case', async () => {
+    // Vendure computes `amount` as `amountToPay = totalWithTax - totalCoveredByPayments`
+    // before calling this handler, so a fully-covered order reaches createPayment with
+    // amount 0 exactly the same way a $0 order total would -- same guard, same test.
+    const result = await x402PaymentMethodHandler.createPayment(ctx, order, 0, configArgs(), { paymentPayload }, method);
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('No outstanding balance');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects a payload whose signed amount does not match the order total, without calling the facilitator', async () => {
     // Signed for $1 (1000000 atomic units) against a $10.00 (1000-cent) order.
     // Previously this reached the facilitator and was authorized purely on
