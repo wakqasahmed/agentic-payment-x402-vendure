@@ -11,6 +11,7 @@ import {
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
 import { isValidCaip2Network } from './network.js';
+import { totalCoveredByPayments } from './order-total.js';
 import { getRateLimitKey, requirementsRateLimiter } from './rate-limit.js';
 import type { X402PaymentRequirementsResult } from './types.js';
 
@@ -21,27 +22,6 @@ import type { X402PaymentRequirementsResult } from './types.js';
  */
 function argsToRecord(args: Array<{ name: string; value: string }>): Record<string, string> {
   return Object.fromEntries(args.map(arg => [arg.name, arg.value]));
-}
-
-/**
- * Payments that could plausibly still settle or already have, mirroring the
- * state filter Vendure's own (internal, non-exported) `totalCoveredByPayments`
- * helper uses. Settled refunds are netted out; unlike that helper, this does
- * not additionally filter by state history depth -- fine for a same-request
- * quote, not intended as a full ledger reconciliation.
- */
-function totalCoveredByPayments(order: { payments?: Array<{ state: string; amount: number; refunds?: Array<{ state: string; total: number }> }> }): number {
-  const payments = (order.payments ?? []).filter(
-    p => p.state !== 'Error' && p.state !== 'Declined' && p.state !== 'Cancelled',
-  );
-  let total = 0;
-  for (const payment of payments) {
-    const settledRefundTotal = (payment.refunds ?? [])
-      .filter(r => r.state === 'Settled')
-      .reduce((sum, r) => sum + r.total, 0);
-    total += payment.amount - Math.abs(settledRefundTotal);
-  }
-  return total;
 }
 
 const INT_ARGS = new Set(['assetDecimals', 'pegCurrencyDecimals', 'maxTimeoutSeconds']);
@@ -135,7 +115,8 @@ export class X402Resolver {
     // over-quotes what's actually still owed. This re-fetches the order with
     // its payments relation since ActiveOrderService's result doesn't load it.
     const orderWithPayments = await this.orderService.findOne(ctx, order.id, ['payments', 'payments.refunds']);
-    const outstandingBalance = order.totalWithTax - totalCoveredByPayments(orderWithPayments ?? order);
+    const outstandingBalance =
+      order.totalWithTax - totalCoveredByPayments((orderWithPayments ?? order).payments ?? []);
 
     const amount = toAtomicUnits(
       Math.max(outstandingBalance, 0),

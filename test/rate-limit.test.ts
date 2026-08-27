@@ -28,7 +28,7 @@ function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
   const defaults: Record<string, string> = {
     facilitatorUrl: FACILITATOR_URL,
     payToAddress: '0xMerchant',
-    network: 'eip155:8453',
+    network: 'eip155:1',
     asset: '0xUSDC',
     assetDecimals: '6',
     assetName: 'USDC',
@@ -49,7 +49,7 @@ const paymentPayload = {
   x402Version: 2,
   accepted: {
     scheme: 'exact',
-    network: 'eip155:8453',
+    network: 'eip155:1',
     asset: '0xUSDC',
     amount: '10000000',
     payTo: '0xMerchant',
