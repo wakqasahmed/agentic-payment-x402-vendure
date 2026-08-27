@@ -13,7 +13,10 @@ function configArgs(overrides: Record<string, string> = {}): ConfigArg[] {
     facilitatorUrl: FACILITATOR_URL,
     payToAddress: '0xMerchant',
     network: 'eip155:8453',
-    asset: '0xUSDC',
+    // Real Base mainnet USDC contract address, so the network/asset pairing
+    // passes the known-asset check by default -- tests that specifically
+    // exercise that check override network/asset explicitly.
+    asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     assetDecimals: '6',
     assetName: 'USDC',
     assetVersion: '2',
@@ -42,7 +45,7 @@ const order = { currencyCode: 'USD', code: 'TEST-ORDER-1' } as Order;
 // default configArgs() above: toAtomicUnits(1000, 2, 6) -> "10000000".
 const paymentPayload = {
   x402Version: 2,
-  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0xUSDC', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+  accepted: { scheme: 'exact', network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
   payload: { signature: 'fake' },
 } as unknown as Record<string, unknown>;
 
@@ -131,6 +134,76 @@ describe('x402PaymentMethodHandler.createPayment', () => {
     expect(result.state).toBe('Declined');
     expect(result.errorMessage).toContain('CAIP-2');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines with a clear config error when asset does not match the known USDC address for network', async () => {
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      // Base Sepolia testnet USDC paired with a Base mainnet network -- the
+      // kind of misconfiguration this check exists to catch.
+      configArgs({ network: 'eip155:8453', asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e' }),
+      { paymentPayload },
+      method,
+    );
+    expect(result.state).toBe('Declined');
+    expect(result.errorMessage).toContain('eip155:8453');
+    expect(result.errorMessage).toContain('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not decline for a correct known network/asset pairing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ isValid: true, payer: '0xBuyer' }), { status: 200 }),
+    );
+
+    const asset = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+    const matchingPayload = {
+      x402Version: 2,
+      accepted: { scheme: 'exact', network: 'eip155:8453', asset, amount: '10000000', payTo: '0xMerchant', maxTimeoutSeconds: 300, extra: {} },
+      payload: { signature: 'fake' },
+    } as unknown as Record<string, unknown>;
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs({ network: 'eip155:8453', asset }),
+      { paymentPayload: matchingPayload },
+      method,
+    );
+    expect(result.state).toBe('Authorized');
+  });
+
+  it('does not decline for a network outside the known-good lookup table', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ isValid: true, payer: '0xBuyer' }), { status: 200 }),
+    );
+
+    const matchingPayload = {
+      x402Version: 2,
+      accepted: {
+        scheme: 'exact',
+        network: 'solana:mainnet',
+        asset: 'AnySplMintAddress',
+        amount: '10000000',
+        payTo: '0xMerchant',
+        maxTimeoutSeconds: 300,
+        extra: {},
+      },
+      payload: { signature: 'fake' },
+    } as unknown as Record<string, unknown>;
+
+    const result = await x402PaymentMethodHandler.createPayment(
+      ctx,
+      order,
+      1000,
+      configArgs({ network: 'solana:mainnet', asset: 'AnySplMintAddress' }),
+      { paymentPayload: matchingPayload },
+      method,
+    );
+    expect(result.state).toBe('Authorized');
   });
 
   it('applies documented defaults for pegCurrencyDecimals/scheme/maxTimeoutSeconds when left unset', async () => {

@@ -17,7 +17,7 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
-import { isValidCaip2Network } from './network.js';
+import { checkKnownAssetForNetwork, isValidCaip2Network } from './network.js';
 import { validatePaymentPayload } from './payment-payload.js';
 import { createPaymentRateLimiter, getRateLimitKey } from './rate-limit.js';
 
@@ -258,6 +258,11 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
           `x402 payment method is misconfigured: "network" ("${args.network}") is not a valid ` +
           'CAIP-2 identifier (e.g. "eip155:8453"). Reconfigure this payment method in the Admin UI.',
       };
+    }
+
+    const assetMismatch = checkKnownAssetForNetwork(args.network, args.asset);
+    if (assetMismatch) {
+      return { amount, state: 'Declined' as const, errorMessage: assetMismatch };
     }
 
     const requirements = buildPaymentRequirements(
