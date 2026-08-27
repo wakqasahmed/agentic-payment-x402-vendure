@@ -11,6 +11,7 @@ import {
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
 import { isValidCaip2Network } from './network.js';
+import { getRateLimitKey, requirementsRateLimiter } from './rate-limit.js';
 import type { X402PaymentRequirementsResult } from './types.js';
 
 /**
@@ -58,6 +59,13 @@ export class X402Resolver {
   async activeOrderX402PaymentRequirements(
     @Ctx() ctx: RequestContext,
   ): Promise<X402PaymentRequirementsResult> {
+    // Anonymous Shop API callers can hit this repeatedly for free -- gate it
+    // locally before doing any DB work. See rate-limit.ts for the fail-open
+    // rationale and key derivation.
+    if (!requirementsRateLimiter.consume(getRateLimitKey(ctx))) {
+      throw new UserInputError('Too many requests. Please try again shortly.');
+    }
+
     const order = await this.activeOrderService.getActiveOrder(ctx, undefined);
     if (!order) {
       throw new UserInputError('No active order found for session');

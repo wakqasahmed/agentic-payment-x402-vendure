@@ -53,6 +53,22 @@ Then create a PaymentMethod in the Admin UI using the **x402** handler and confi
 
 Orders in any currency other than `pegCurrencyCode` are rejected by this payment method at both the quoting query and `createPayment` — there's no FX conversion, only a 1:1 peg assumption.
 
+### Rate limiting
+
+Both `activeOrderX402PaymentRequirements` and `createPayment` are reachable by anonymous Shop API sessions. Without a local limit, a session could spam locally-valid-looking payloads that each still round-trip to the facilitator — a cost/rate-limit amplification vector against the facilitator relationship. This plugin applies a fixed-window rate limit, keyed by session token (falling back to request IP, then a shared bucket) *before* any facilitator call, with sane built-in defaults:
+
+```ts
+X402Plugin.init({
+  rateLimit: {
+    createPaymentMax: 10,   // default: 10 attempts per window
+    requirementsMax: 30,    // default: 30 requests per window
+    windowMs: 60_000,       // default: 60s window
+  },
+}),
+```
+
+The limiter is in-memory and per-process (this plugin has no Redis/cache dependency) — it doesn't coordinate across multiple app instances behind a load balancer, and it fails **open** on its own internal errors: a broken rate limiter blocking all checkout traffic is worse than temporarily unlimited traffic.
+
 ## Storefront / agent flow
 
 There's no server-issued "client secret" the way Stripe works. Instead:

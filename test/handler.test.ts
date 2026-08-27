@@ -4,6 +4,7 @@ import { Logger } from '@vendure/core';
 import type { Order, Payment, PaymentMethod, RequestContext } from '@vendure/core';
 
 import { x402PaymentMethodHandler } from '../src/handler.js';
+import { resetX402RateLimiters } from '../src/rate-limit.js';
 
 const FACILITATOR_URL = 'https://facilitator.test';
 
@@ -51,6 +52,10 @@ describe('x402PaymentMethodHandler.createPayment', () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+    // ctx is undefined in these tests, so every call shares the 'unknown'
+    // rate-limit bucket -- reset between tests so unrelated tests don't
+    // starve each other's budget.
+    resetX402RateLimiters();
   });
 
   afterEach(() => {
@@ -292,6 +297,10 @@ describe('x402PaymentMethodHandler.settlePayment', () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+    // ctx is undefined in these tests, so every call shares the 'unknown'
+    // rate-limit bucket -- reset between tests so unrelated tests don't
+    // starve each other's budget.
+    resetX402RateLimiters();
   });
 
   afterEach(() => {
