@@ -18,9 +18,10 @@ import {
 
 import { toAtomicUnits } from './amount.js';
 import { X402_PAYMENT_METHOD_CODE } from './constants.js';
-import { isValidCaip2Network } from './network.js';
+import { checkKnownAssetForNetwork, isValidCaip2Network } from './network.js';
 import { totalCoveredByPayments } from './order-total.js';
 import { validatePaymentPayload } from './payment-payload.js';
+import { createPaymentRateLimiter, getRateLimitKey } from './rate-limit.js';
 
 const LOGGER_CTX = 'x402';
 
@@ -186,7 +187,20 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
       ],
     },
   },
-  createPayment: async (_ctx, order, amount, args, metadata): Promise<CreatePaymentResult | CreatePaymentErrorResult> => {
+  createPayment: async (ctx, order, amount, args, metadata): Promise<CreatePaymentResult | CreatePaymentErrorResult> => {
+    // Gate on session/IP before any local validation or the facilitator
+    // round-trip below -- an anonymous session spamming locally-valid-looking
+    // payloads is a cost/rate-limit amplification vector against the
+    // facilitator relationship even when every individual payload is
+    // eventually declined. See rate-limit.ts for the fail-open rationale.
+    if (!createPaymentRateLimiter.consume(getRateLimitKey(ctx))) {
+      return {
+        amount,
+        state: 'Declined' as const,
+        errorMessage: 'Too many payment attempts. Please try again shortly.',
+      };
+    }
+
     if (order.currencyCode !== args.pegCurrencyCode) {
       return {
         amount,
@@ -256,6 +270,11 @@ export const x402PaymentMethodHandler = new PaymentMethodHandler({
           `x402 payment method is misconfigured: "network" ("${args.network}") is not a valid ` +
           'CAIP-2 identifier (e.g. "eip155:8453"). Reconfigure this payment method in the Admin UI.',
       };
+    }
+
+    const assetMismatch = checkKnownAssetForNetwork(args.network, args.asset);
+    if (assetMismatch) {
+      return { amount, state: 'Declined' as const, errorMessage: assetMismatch };
     }
 
     const requirements = buildPaymentRequirements(
