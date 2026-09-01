@@ -7,10 +7,10 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "homepage": "https://github.com/wakqasahmed/agentic-payment-x402-vendure",
+  "homepage": "https://github.com/AIOpsome/agentic-payment-x402-vendure",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wakqasahmed/agentic-payment-x402-vendure.git"
+    "url": "https://github.com/AIOpsome/agentic-payment-x402-vendure.git"
   },
   "keywords": [
     "vendure",
