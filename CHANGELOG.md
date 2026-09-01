@@ -1,5 +1,16 @@
 # vendure-payment-x402
 
+## 0.3.0
+
+### Minor Changes
+
+- c211dda: Validate the configured `asset` address against a known-good USDC contract address table for `network` in the x402 payment method handler (#40). Previously a misconfigured pairing (e.g. a testnet asset address with a mainnet network, or vice versa) compiled fine and only failed confusingly at the facilitator. Requests are now declined locally with a clear error when the pair is known to mismatch; networks outside the verified table are left unaffected.
+- ca2b5dc: Add a fixed-window rate limit, keyed by session token (falling back to request IP, then a shared bucket), on `activeOrderX402PaymentRequirements` and `createPayment` (#38). Without this, an anonymous Shop API session could spam locally-valid-looking payloads that each still round-trip to the facilitator — a cost/rate-limit amplification vector against the facilitator relationship. Over-limit requests are now declined locally, before any facilitator call. Configurable via `X402Plugin.init({ rateLimit: { createPaymentMax, requirementsMax, windowMs } })`, with sane built-in defaults (10 `createPayment` attempts / 30 requirements queries per 60s window) so it works out of the box. The limiter is in-memory and per-process (no new Redis/cache dependency), and fails open on its own internal errors — a broken rate limiter blocking all checkout traffic would be worse than temporarily unlimited traffic.
+
+### Patch Changes
+
+- 42c6247: Fix `settlePayment`'s order-total drift check (#39) to fail closed instead of silently skipping. Previously `if (freshOrder)` meant that any case where `orderService.findOne` returned `undefined` -- not just an unset `orderService`, but also a real production case where the `RequestContext`'s channel doesn't match the order's (a worker/job context, or a multi-vendor `OrderSellerStrategy` setup) -- skipped the drift check entirely, with no log line, and settled anyway. The check is now inverted: any inability to re-fetch a fresh order fails closed with a logged error, the same as a detected drift. Also switch the sibling-payment exclusion filter from a raw `p.id !== payment.id` to core's `idsAreEqual`, since Vendure's `ID` type is `string | number` and a strict comparison could false-positive-mismatch two representations of the same id, and move the stored `requirements.amount` `BigInt` parse inside the existing `try` block so a malformed stored value fails cleanly instead of throwing.
+
 ## 0.2.3
 
 ### Patch Changes
