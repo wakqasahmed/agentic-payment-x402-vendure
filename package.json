@@ -1,9 +1,10 @@
 {
   "name": "agentic-payment-x402-vendure",
   "version": "0.2.3",
-  "description": "x402 stablecoin payment method for Vendure — lets AI shopping agents (and any x402-aware client) pay for Vendure orders via the x402 payments protocol.",
+  "description": "Agentic Pay for Vendure — x402 stablecoin payment method for Vendure letting AI shopping agents pay via the x402 protocol.",
   "type": "module",
   "license": "MIT",
+  "author": "AIOpsome <contact@aiopsome.com>",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -17,6 +18,7 @@
     "vendure-plugin",
     "x402",
     "agentic-commerce",
+    "agentic-pay",
     "stablecoin",
     "payments"
   ],

@@ -1,13 +1,15 @@
-# agentic-payment-x402-vendure
+# Agentic Pay for Vendure
 
-> **Renamed from `vendure-payment-x402`.** The old npm package is deprecated (not removed) and points here. If you have `vendure-payment-x402` installed:
-> ```sh
-> npm uninstall vendure-payment-x402
-> npm install agentic-payment-x402-vendure
-> ```
-> and update the import: `import { X402Plugin } from 'agentic-payment-x402-vendure';`. No API changes — this is a package/repository identity rename only.
+> **Package:** `agentic-payment-x402-vendure` (npm) · **Ecosystem:** [AIOpsome Agentic Commerce](https://github.com/AIOpsome)
 
 An [x402](https://x402.org) stablecoin payment method for [Vendure](https://vendure.io) — lets AI shopping agents (and any x402-aware client) pay for Vendure orders directly, without a card or a traditional checkout UI.
+
+Part of the **Agentic Pay** suite by [AIOpsome](https://aiopsome.com):
+- 🛒 **[Agentic Pay for WooCommerce](https://github.com/AIOpsome/agentic-payment-x402-woocommerce)** — WordPress / WooCommerce Gateway (`agentic-pay-for-woocommerce`)
+- 🛍️ **[Agentic Pay for Vendure](https://github.com/AIOpsome/agentic-payment-x402-vendure)** — Vendure Plugin (`agentic-payment-x402-vendure`)
+- 🌙 **[Agentic Pay for Lunar](https://github.com/AIOpsome/agentic-payment-x402-lunar)** — Lunar Driver (`aiopsome/agentic-payment-x402-lunar`)
+
+> **Note on previous package name:** Renamed from `vendure-payment-x402`. The old npm package is deprecated and points here (`npm install agentic-payment-x402-vendure`).
 
 ## How it maps onto Vendure
 
