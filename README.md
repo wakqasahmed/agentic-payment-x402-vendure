@@ -1,5 +1,13 @@
 # Agentic Pay for Vendure
 
+[![npm version](https://img.shields.io/npm/v/agentic-payment-x402-vendure.svg?style=flat-square)](https://www.npmjs.com/package/agentic-payment-x402-vendure)
+[![npm downloads](https://img.shields.io/npm/dm/agentic-payment-x402-vendure.svg?style=flat-square)](https://www.npmjs.com/package/agentic-payment-x402-vendure)
+[![npm total downloads](https://img.shields.io/npm/dt/agentic-payment-x402-vendure.svg?style=flat-square)](https://www.npmjs.com/package/agentic-payment-x402-vendure)
+[![License: MIT](https://img.shields.io/npm/l/agentic-payment-x402-vendure.svg?style=flat-square)](LICENSE)
+[![Vendure](https://img.shields.io/badge/Vendure-v2%2B-13B5DA.svg?style=flat-square)](https://vendure.io)
+[![Protocol](https://img.shields.io/badge/protocol-x402%20v2-blueviolet.svg?style=flat-square)](https://x402.org)
+[![Network](https://img.shields.io/badge/network-Base%20(8453)-0052FF.svg?style=flat-square)](https://base.org)
+
 > **Package:** `agentic-payment-x402-vendure` (npm) · **Ecosystem:** [AIOpsome Agentic Commerce](https://github.com/AIOpsome)
 
 An [x402](https://x402.org) stablecoin payment method for [Vendure](https://vendure.io) — lets AI shopping agents (and any x402-aware client) pay for Vendure orders directly, without a card or a traditional checkout UI.
